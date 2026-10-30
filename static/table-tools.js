@@ -1,0 +1,23 @@
+(function(root){
+const defaults=[{field:'status',direction:1},{field:'date_applied',direction:-1},{field:'company',direction:1}];
+const fields=['title','company','date_applied','location','status','fit','notes','url','follow_up'];
+function clean(rules){const seen=new Set();return (Array.isArray(rules)?rules:defaults).filter(r=>r&&fields.includes(r.field)&&[1,-1].includes(r.direction)&&!seen.has(r.field)&&seen.add(r.field)).map(r=>({...r}));}
+function rank(s){const interview=/^Interview (\d+)$/i.exec(s||'');if(interview)return 10+Number(interview[1]);return {Waiting:0,Offer:100,Accepted:110,Rejected:120,Ghosted:125,Withdrawn:130}[s]??140;}
+function compare(a,b,rules,order=[]){const statusRank=s=>order.includes(s)?order.indexOf(s):order.length+rank(s);for(const {field,direction} of rules){let x=a[field],y=b[field];const empty=v=>v==null||v==='';if(empty(x)!==empty(y))return empty(x)?1:-1;if(empty(x))continue;let n=field==='status'?(statusRank(x)-statusRank(y)||String(x).localeCompare(String(y),undefined,{sensitivity:'base'})):field==='fit'?Number(x)-Number(y):String(x).localeCompare(String(y),undefined,{numeric:true,sensitivity:'base'});if(n)return n*direction;}return a.id-b.id;}
+function groups(jobs){const grouped=new Map();for(const j of jobs){if(j.latitude==null||j.longitude==null)continue;const lat=Number(j.latitude),lon=Number(j.longitude);if(!Number.isFinite(lat)||!Number.isFinite(lon)||Math.abs(lat)>90||Math.abs(lon)>180)continue;const key=lat.toFixed(4)+','+lon.toFixed(4);if(!grouped.has(key))grouped.set(key,{lat,lon,jobs:[]});grouped.get(key).jobs.push(j);}return [...grouped.values()];}
+function flow(jobs){const c={submitted:jobs.length,interviews:0,directRejected:0,directGhosted:0,waiting:0,other:0,interviewRejected:0,interviewGhosted:0,interviewActive:0,interviewOther:0,offers:0,accepted:0,declined:0,offerPending:0};for(const j of jobs){const offered=['Offer','Accepted','Offer declined'].includes(j.status),interviewed=offered||/^Interview \d+$/i.test(j.status)||Number(j.interviews_completed)>0;if(interviewed){c.interviews++;if(offered){c.offers++;c[j.status==='Accepted'?'accepted':j.status==='Offer declined'?'declined':'offerPending']++;}else c[j.status==='Rejected'?'interviewRejected':j.status==='Ghosted'?'interviewGhosted':/^Interview \d+$/i.test(j.status)?'interviewActive':'interviewOther']++;}else c[j.status==='Rejected'?'directRejected':j.status==='Ghosted'?'directGhosted':j.status==='Waiting'?'waiting':'other']++;}return c;}
+function transitions(jobs){
+ const edges=new Map(),current={},terminalCurrent={},round=s=>Number(/^Interview (\d+)$/i.exec(s||'')?.[1]||0),canonical=s=>s==='Waiting'?'Applied':round(s)?'Interview '+Math.min(100,round(s)):['Offer','Accepted','Offer declined','Rejected','Ghosted'].includes(s)?s:'Other / withdrawn';let maxRound=3;
+ for(const j of jobs){const end=canonical(j.status);current[end]=(current[end]||0)+1;let history=(Array.isArray(j.status_history)?j.status_history:[]).map(canonical).filter((v,i,a)=>!i||v!==a[i-1]);if(history.at(-1)!==end)history.push(end);
+ const manual=Math.min(100,Math.max(0,Number(j.interviews_completed)||0)),seenRound=Math.max(0,...history.map(round));let inferredHistory=false;
+ if(manual>seenRound&&!round(end)){const at=history.length-1;history.splice(at,0,...Array.from({length:manual},(_,i)=>'Interview '+(i+1)));inferredHistory=true;}
+ let previous='Applied',lastFrom=null,recordedStart=history[0]==='Applied',perJob=new Map();
+ const add=(to,inferred)=>{if(previous!==to){lastFrom=previous;const key=JSON.stringify([previous,to]);perJob.set(key,(perJob.get(key)??true)&&inferred);}previous=to;maxRound=Math.max(maxRound,round(to));};
+ for(const next of history){if(next===previous)continue;const n=round(next),p=round(previous);if(n>p+1&&(previous==='Applied'||p)){for(let i=p+1;i<=n;i++)add('Interview '+i,true);}else if(['Accepted','Offer declined'].includes(next)&&previous!=='Offer'){add('Offer',true);add(next,true);}else add(next,inferredHistory||!recordedStart);recordedStart=true;}
+ if(lastFrom&&['Rejected','Ghosted','Other / withdrawn'].includes(end)){const key=JSON.stringify([lastFrom,end]);terminalCurrent[key]=(terminalCurrent[key]||0)+1;}
+ for(const [key,inferred] of perJob){if(!edges.has(key)){const [from,to]=JSON.parse(key);edges.set(key,{from,to,count:0,inferred:0});}edges.get(key).count++;if(inferred)edges.get(key).inferred++;}
+ }
+ return {current,terminalCurrent,edges:[...edges.values()],maxRound,total:jobs.length};
+}
+const api={defaults,clean,compare,groups,flow,transitions};if(typeof module!=='undefined')module.exports=api;else root.tableTools=api;
+})(globalThis);

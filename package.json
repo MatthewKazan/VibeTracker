@@ -1,0 +1,105 @@
+{
+  "name": "waypoint-job-manager",
+  "version": "1.1.6",
+  "description": "Private desktop job application tracker with local AI r\u00e9sum\u00e9 insights",
+  "author": "Waypoint contributors",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "icons": "node scripts/icons.mjs",
+    "prepare-runtime": "node scripts/runtime.mjs",
+    "dist:mac": "node scripts/package.mjs mac arm64",
+    "dist:win": "node scripts/package.mjs win x64",
+    "dist:linux": "node scripts/package.mjs linux x64",
+    "test": "node --test desktop/*.test.cjs"
+  },
+  "devDependencies": {
+    "electron": "45.1.0",
+    "electron-builder": "26.18.0",
+    "sharp": "0.34.5"
+  },
+  "build": {
+    "appId": "app.waypoint.jobmanager",
+    "productName": "JobTracker",
+    "asar": true,
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "desktop/main.cjs",
+      "desktop/runtime.cjs",
+      "build/icon.png",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "app.py",
+        "to": "backend/app.py"
+      },
+      {
+        "from": "intelligence.py",
+        "to": "backend/intelligence.py"
+      },
+      {
+        "from": "static",
+        "to": "backend/static"
+      },
+      {
+        "from": "build/runtime",
+        "to": "python"
+      },
+      {
+        "from": "errors.py",
+        "to": "backend/errors.py"
+      },
+      {
+        "from": "locations.py",
+        "to": "backend/locations.py"
+      }
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "identity": "-"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "artifactName": "JobTracker-Setup-${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Office",
+      "icon": "build/icons",
+      "maintainer": "Waypoint contributors",
+      "executableName": "jobtracker",
+      "artifactName": "JobTracker-${version}-${arch}.${ext}"
+    }
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

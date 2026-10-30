@@ -1,0 +1,23 @@
+data/
+__pycache__/
+*.pyc
+.DS_Store
+node_modules/
+release/
+build/runtime/
+build/runtime-target.txt
+work/
+
+# Personal databases, exports, credentials, and local previews
+*.sqlite3*
+*.db
+*.log
+.env
+.env.*
+!.env.example
+outputs/
+*.numbers
+*.xlsx
+*.csv
+*.pdf
+*.docx
