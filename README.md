@@ -1,5 +1,9 @@
 # VibeTracker
 
+## Download
+
+Find latest release on the right, download and unpack release for your system. Only Mac has been tested
+
 ## Start
 Double-click `Start.command` in Finder. It starts a local server and opens http://127.0.0.1:8765 in your browser. Keep its Terminal window running while using the app. Closing it does not erase saved applications. Python 3 is the only required runtime; no pip installation is needed.
 
