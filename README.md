@@ -80,3 +80,6 @@ Questions & answers stores reusable responses in named groups. Drag groups to re
 New applications record a timezone-aware save time. Hover over the applied date to see it; date sorting breaks same-day ties using that instant. Older records without a recorded application time show “Time not recorded.” Existing sort priorities remain configurable.
 
 Autofill now reads page metadata, matching role objects in same-origin JavaScript bundles, and Gem's public posting API. HTML paragraph and list boundaries are preserved. Fit extraction accepts S-prefixed sentence references and falls back to source requirement sentences when model references fail, while retaining evidence checks during scoring.
+
+## Version 1.2.1
+Q&A cards now have a single Copy answer action. Complete autofill fields skip unnecessary model calls, complete structured postings skip extra source fetching, and full posting text takes priority over short marketing metadata. Failed optional script fetches preserve available extraction results. The desktop backend client fully reads responses and handles interrupted connections without using Undici, addressing the reported parser assertion.

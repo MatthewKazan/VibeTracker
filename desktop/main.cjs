@@ -3,7 +3,7 @@ const {spawn}=require('node:child_process');
 const fs=require('node:fs');
 const path=require('node:path');
 const crypto=require('node:crypto');
-const {pythonExecutable,safeExternal,backendEnvironment,wipeTarget}=require('./runtime.cjs');
+const {pythonExecutable,safeExternal,backendEnvironment,wipeTarget,localRequest}=require('./runtime.cjs');
 // Smoke mode (CI launch test) uses a throwaway profile so it never touches real data or collides with a running copy.
 const smoke=process.env.WAYPOINT_SMOKE==='1';
 app.setPath('userData',smoke?path.join(require('node:os').tmpdir(),'jobtracker-smoke-'+process.pid,'Waypoint'):path.join(app.getPath('appData'),'Waypoint'));
@@ -30,7 +30,7 @@ async function start(){
   server.once('exit',code=>{clearTimeout(timer);reject(Error('The data engine exited with code '+code));});
   server.stdout.on('data',d=>{logStream.write(d);output+=d;const match=output.match(/WAYPOINT_READY (http:\/\/127\.0\.0\.1:\d+)/);if(match){clearTimeout(timer);resolve(match[1]);}});
  });
- const health=await fetch(origin+'/api/state',{headers:{'X-Waypoint-Session':secret},signal:AbortSignal.timeout(10000)});
+ const health=await localRequest(origin+'/api/state',{headers:{'X-Waypoint-Session':secret},timeout:10000});
  if(!health.ok)throw Error('The app and data engine could not authenticate (HTTP '+health.status+'). Install the latest JobTracker build. Your data is unchanged.');
  session.defaultSession.setPermissionRequestHandler((_wc,permission,callback)=>callback(permission==='clipboard-sanitized-write'));
  session.defaultSession.webRequest.onBeforeSendHeaders({urls:[origin+'/*']},(details,callback)=>callback({requestHeaders:{...details.requestHeaders,'X-Waypoint-Session':secret}}));
@@ -83,7 +83,7 @@ app.on('quit',()=>{
 async function backendRequest(route,body){
  const headers={'X-Waypoint-Session':secret};
  if(body){const state=await backendRequest('state');headers['X-Token']=state.token;headers['Content-Type']='application/json';}
- const r=await fetch(origin+'/api/'+route,{method:body?'POST':'GET',headers,body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(35000)});
+ const r=await localRequest(origin+'/api/'+route,{method:body?'POST':'GET',headers,body:body?JSON.stringify(body):undefined,timeout:35000});
  const result=await r.json();if(!r.ok)throw Error(result.error||'The local engine did not respond.');return result;
 }
 app.on('before-quit',event=>{
