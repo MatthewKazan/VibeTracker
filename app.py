@@ -149,7 +149,9 @@ def extract(url,text=''):
 
 def parse_sheet(content,name):
  if name.lower().endswith('.csv'):
-  text=content.decode('utf-8-sig')
+  # Excel on Windows saves "CSV (Comma delimited)" as Windows-1252, not UTF-8.
+  try:text=content.decode('utf-8-sig')
+  except UnicodeDecodeError:text=content.decode('cp1252',errors='replace')
   if not text.strip():raise ValueError('The CSV is empty. Choose a spreadsheet containing a header and job rows.')
   try:dialect=csv.Sniffer().sniff(text[:10000],delimiters=',;\t|')
   except csv.Error:dialect=csv.excel
@@ -309,7 +311,8 @@ class Handler(BaseHTTPRequestHandler):
    jobs=current_jobs()
    s=io.StringIO(); w=csv.DictWriter(s,fieldnames=FIELDS,extrasaction='ignore'); w.writeheader()
    for j in jobs: w.writerow({k:('\''+v if isinstance(v,str) and v.startswith(('=','+','-','@')) else v) for k,v in j.items()})
-   return self.reply(s.getvalue(),ctype='text/csv')
+   # The BOM makes Excel on Windows read the file as UTF-8 instead of the system code page.
+   return self.reply('\ufeff'+s.getvalue(),ctype='text/csv; charset=utf-8')
   p=ROOT/'static'/('index.html' if path=='/' else path.lstrip('/'))
   if (ROOT/'static').resolve() not in p.resolve().parents or not p.is_file(): return self.reply({'error':'Not found'},404)
   self.reply(p.read_bytes(),ctype={'.html':'text/html','.js':'text/javascript','.css':'text/css','.png':'image/png','.svg':'image/svg+xml'}.get(p.suffix,'text/plain'))
@@ -339,6 +342,7 @@ class Handler(BaseHTTPRequestHandler):
      if not isinstance(colors,dict) or len(colors)>100 or any(not isinstance(k,str) or not k.strip() or len(k)>60 or not isinstance(v,str) or not re.fullmatch(r'#[0-9a-fA-F]{6}',v) for k,v in colors.items()) or len({k.strip().casefold() for k in colors})!=len(colors):raise ValueError('Statuses need unique names (up to 60 characters) and valid colors. Maximum 100 statuses.')
    if route=='/api/settings':
     if 'quit_model_policy' in j and j['quit_model_policy'] not in ('ask','unload','keep'):raise ValueError('Choose a valid quit preference.')
+    if 'sidebar_collapsed' in j and not isinstance(j['sidebar_collapsed'],bool):raise ValueError('Sidebar setting must be true or false.')
     if 'sort_rules' in j:
      rules=j['sort_rules']
      if not isinstance(rules,list) or len(rules)>len(FIELDS) or any(not isinstance(r,dict) or r.get('field') not in FIELDS or r.get('direction') not in (-1,1) for r in rules):raise ValueError('Invalid sort settings. Reset the sort and retry.')
@@ -427,7 +431,7 @@ class Handler(BaseHTTPRequestHandler):
       if j.get('status')=='Waiting':exempt_from_ghosting(c,result['id'])
      elif route=='/api/delete': c.execute('DELETE FROM jobs WHERE id=?',(j['id'],)); result={'ok':True}
      elif route=='/api/settings':
-      for k in ['resume','model','auto_start','profile_memory','quit_model_policy','sort_rules','status_order','status_colors','analysis_system','analysis_instructions','auto_analyze']:
+      for k in ['resume','model','auto_start','profile_memory','quit_model_policy','sort_rules','status_order','status_colors','analysis_system','analysis_instructions','auto_analyze','sidebar_collapsed']:
        if k in j: c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(k,json.dumps(j[k])))
       result={'ok':True}
      elif route in ('/api/import','/api/restore'):
@@ -440,7 +444,7 @@ class Handler(BaseHTTPRequestHandler):
        count+=1
       if route=='/api/restore':
        for k,v in j.get('settings',{}).items():
-        if k in ('resume','model','auto_start','profile_memory','quit_model_policy','sort_rules','status_order','status_colors','analysis_system','analysis_instructions','auto_analyze') or k.startswith('discussion_'): c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(k,json.dumps(v)))
+        if k in ('resume','model','auto_start','profile_memory','quit_model_policy','sort_rules','status_order','status_colors','analysis_system','analysis_instructions','auto_analyze','sidebar_collapsed') or k.startswith('discussion_'): c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(k,json.dumps(v)))
       result={'count':count,'skipped':skipped}
      elif route=='/api/backup': result={'ok':True}
      else: raise ValueError('Unknown action')

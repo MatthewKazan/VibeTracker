@@ -3,7 +3,7 @@ const {pythonExecutable,safeExternal,backendEnvironment}=require('./runtime.cjs'
 test('Windows uses bundled interpreter, never a system Python',()=>assert.equal(pythonExecutable('/bundle','win32'),'/bundle/python.exe'));
 test('Linux uses bundled interpreter',()=>assert.equal(pythonExecutable('/bundle','linux'),'/bundle/bin/python3'));
 test('External links cannot launch arbitrary protocols',()=>{assert.equal(safeExternal('https://ollama.com'),true);for(const v of ['file:///etc/passwd','javascript:alert(1)','cmd:foo','http://example.com'])assert.equal(safeExternal(v),false);});
-test('Backend gets a per-launch secret and persistent data directory',()=>{const env=backendEnvironment('/profile/data','secret');assert.equal(env.JOB_MANAGER_DATA,'/profile/data');assert.equal(env.JOB_MANAGER_TOKEN,'secret');assert.equal(env.PORT,'0');});
+test('Backend gets a per-launch secret and persistent data directory',()=>{const env=backendEnvironment('/profile/data','secret');assert.equal(env.JOB_MANAGER_DATA,'/profile/data');assert.equal(env.JOB_MANAGER_TOKEN,'secret');assert.equal(env.PORT,'0');assert.equal(env.PYTHONUTF8,'1');});
 test('Wipe only ever targets the app profile folder',()=>{
  const {wipeTarget}=require('./runtime.cjs');
  assert.equal(wipeTarget('/Users/a/Library/Application Support/Waypoint'),'/Users/a/Library/Application Support/Waypoint');

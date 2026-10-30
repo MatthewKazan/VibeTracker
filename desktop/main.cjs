@@ -1,15 +1,19 @@
-const {app,BrowserWindow,dialog,Menu,shell,session}=require('electron');
+const {app,BrowserWindow,dialog,Menu,shell,session,screen}=require('electron');
 const {spawn}=require('node:child_process');
 const fs=require('node:fs');
 const path=require('node:path');
 const crypto=require('node:crypto');
 const {pythonExecutable,safeExternal,backendEnvironment,wipeTarget}=require('./runtime.cjs');
-app.setPath('userData',path.join(app.getPath('appData'),'Waypoint'));
+// Smoke mode (CI launch test) uses a throwaway profile so it never touches real data or collides with a running copy.
+const smoke=process.env.WAYPOINT_SMOKE==='1';
+app.setPath('userData',smoke?path.join(require('node:os').tmpdir(),'jobtracker-smoke-'+process.pid,'Waypoint'):path.join(app.getPath('appData'),'Waypoint'));
+// GUI apps have no visible console on Windows, so smoke results go to a file.
+function smokeResult(text){if(process.env.WAYPOINT_SMOKE_RESULT)fs.writeFileSync(process.env.WAYPOINT_SMOKE_RESULT,text);}
 let server,win,origin,quitting=false,quitPending=false,wipeOnQuit=false,secret,logStream;
 const gotLock=app.requestSingleInstanceLock();
 if(!gotLock){app.quit();}else{
 app.on('second-instance',()=>{if(win){if(win.isMinimized())win.restore();win.show();win.focus();}});
-app.whenReady().then(start).catch(e=>{dialog.showErrorBox('JobTracker could not start',e.message+'\nYour saved data has not been removed.');app.quit();});
+app.whenReady().then(start).catch(e=>{if(smoke){smokeResult('fail: '+e.message);if(server)server.kill();app.exit(1);return;}dialog.showErrorBox('JobTracker could not start',e.message+'\nYour saved data has not been removed.');app.quit();});
 }
 async function start(){
  const root=app.isPackaged?process.resourcesPath:path.resolve(__dirname,'..');
@@ -30,7 +34,9 @@ async function start(){
  if(!health.ok)throw Error('The app and data engine could not authenticate (HTTP '+health.status+'). Install the latest JobTracker build. Your data is unchanged.');
  session.defaultSession.setPermissionRequestHandler((_wc,permission,callback)=>callback(permission==='clipboard-sanitized-write'));
  session.defaultSession.webRequest.onBeforeSendHeaders({urls:[origin+'/*']},(details,callback)=>callback({requestHeaders:{...details.requestHeaders,'X-Waypoint-Session':secret}}));
- win=new BrowserWindow({width:1440,height:940,minWidth:820,minHeight:620,backgroundColor:'#171717',title:'JobTracker',icon:path.join(__dirname,'../build/icon.png'),show:false,webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
+ const bounds=savedBounds();
+ const area=screen.getPrimaryDisplay().workArea,width=Math.min(1628,area.width),height=Math.min(869,area.height);
+ win=new BrowserWindow({x:area.x+Math.round((area.width-width)/2),y:area.y+Math.round((area.height-height)/2),width,height,minWidth:640,minHeight:480,backgroundColor:'#171717',title:'JobTracker',icon:path.join(__dirname,'../build/icon.png'),show:false,webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
  win.webContents.setWindowOpenHandler(({url})=>{if(safeExternal(url))shell.openExternal(url);return {action:'deny'};});
  win.webContents.on('will-navigate',(event,url)=>{if(new URL(url).origin!==origin){event.preventDefault();if(safeExternal(url))shell.openExternal(url);}});
  win.webContents.on('will-attach-webview',e=>e.preventDefault());
@@ -38,10 +44,28 @@ async function start(){
  const template=[...(process.platform==='darwin'?[{role:'appMenu'}]:[]),{label:'File',submenu:[{label:'Open data folder',click:()=>shell.openPath(data)},{label:'Delete all JobTracker data…',click:wipeData},{type:'separator'},{role:'quit'}]},{role:'editMenu'},{label:'View',submenu:[{role:'reload'},{role:'resetZoom'},{role:'zoomIn'},{role:'zoomOut'},{role:'togglefullscreen'}]},{label:'Help',submenu:[{label:'About JobTracker',click:()=>dialog.showMessageBox(win,{type:'info',title:'JobTracker',message:'JobTracker '+app.getVersion(),detail:'Local job application management. Your data stays in your user profile. Local AI is optional.'})}]}];
  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
  win.on('close',event=>{if(!quitting){event.preventDefault();app.quit();}});
+ // Saved bounds are applied after creation: setBounds handles monitors with different scale factors more reliably than constructor options on Windows.
+ if(bounds.width){const {maximized,...rect}=bounds;win.setBounds(rect);if(maximized)win.maximize();}
+ let saveTimer;const writeBounds=()=>{clearTimeout(saveTimer);try{fs.writeFileSync(windowStateFile(),JSON.stringify({...win.getNormalBounds(),maximized:win.isMaximized()}));}catch{}};
+ for(const e of ['resize','move','maximize','unmaximize'])win.on(e,()=>{clearTimeout(saveTimer);saveTimer=setTimeout(writeBounds,400);});
+ win.on('close',writeBounds);
  await win.loadURL(origin);win.show();
- if(process.env.WAYPOINT_SMOKE==='1')setTimeout(()=>app.quit(),5000);
+ if(smoke){
+  // Pass only if the backend answered and the interface actually rendered the application list.
+  const rendered=await win.webContents.executeJavaScript("new Promise(r=>setTimeout(()=>r(!!document.querySelector('#navcount')&&document.querySelector('#rows')!==null),3000))");
+  if(!rendered)throw Error('The interface did not render.');
+  smokeResult('ok '+app.getVersion());setTimeout(()=>app.quit(),1000);
+ }
 }
 app.on('window-all-closed',()=>app.quit());
+// First launch opens centered at 1628x869, shrunk to fit smaller screens. Later launches reopen at the last size and position, as long as it is still on a connected display.
+function windowStateFile(){return path.join(app.getPath('userData'),'window-state.json');}
+function savedBounds(){
+ try{const b=JSON.parse(fs.readFileSync(windowStateFile(),'utf8'));if(![b.x,b.y,b.width,b.height].every(Number.isFinite))return {};
+  const area=screen.getDisplayMatching(b).workArea,visible=b.x<area.x+area.width-80&&b.x+b.width>area.x+80&&b.y>=area.y-10&&b.y<area.y+area.height-80;
+  return visible?{x:b.x,y:b.y,width:Math.min(b.width,area.width),height:Math.min(b.height,area.height),maximized:!!b.maximized}:{};
+ }catch{return {};}
+}
 async function wipeData(){
  const dir=wipeTarget(app.getPath('userData'));if(!dir)return;
  const answer=await dialog.showMessageBox(win,{type:'warning',title:'Delete all JobTracker data',message:'Permanently delete all JobTracker data?',detail:'This removes your applications, résumé, saved analyses and recovery snapshots from '+dir+'. It cannot be undone, so export a backup first if you may want it. JobTracker will close afterwards. Removing the app itself does not delete this data.',buttons:['Cancel','Delete everything & quit'],defaultId:0,cancelId:0});

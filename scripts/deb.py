@@ -14,8 +14,8 @@ def tar(entries):
    else:
     raw=value.encode();i=tarfile.TarInfo(name);i.size=len(raw);i.mode=mode;t.addfile(i,io.BytesIO(raw))
  return b.getvalue()
-control=tar([('control',f'Package: jobtracker\nVersion: {version}\nArchitecture: amd64\nMaintainer: JobTracker contributors\nDescription: Local job application tracker\nDepends: libgtk-3-0, libnss3, libasound2, libgbm1\n',0o644)])
-data=tar([('opt/jobtracker',root/'release/linux-unpacked',0),('usr/bin/jobtracker','#!/bin/sh\nexec /opt/jobtracker/jobtracker "$@"\n',0o755),('usr/share/applications/jobtracker.desktop','[Desktop Entry]\nName=JobTracker\nExec=/opt/jobtracker/jobtracker %U\nIcon=jobtracker\nType=Application\nCategories=Office;\nTerminal=false\n',0o644),('usr/share/icons/hicolor/256x256/apps/jobtracker.png',root/'build/icons/256x256.png',0)])
+control=tar([('control',f'Package: jobtracker\nVersion: {version}\nArchitecture: amd64\nMaintainer: JobTracker contributors\nDescription: Local job application tracker\nDepends: libgtk-3-0t64 | libgtk-3-0, libnss3, libasound2t64 | libasound2, libgbm1, libxtst6, libatspi2.0-0t64 | libatspi2.0-0, xdg-utils\n',0o644)])
+data=tar([('opt/jobtracker',root/'release/linux-unpacked',0),('usr/bin/jobtracker','#!/bin/sh\nexec /opt/jobtracker/jobtracker "$@"\n',0o755),('usr/share/applications/jobtracker.desktop','[Desktop Entry]\nName=JobTracker\nExec=/opt/jobtracker/jobtracker %U\nIcon=jobtracker\nType=Application\nCategories=Office;\nTerminal=false\nStartupWMClass=JobTracker\n',0o644),('usr/share/icons/hicolor/256x256/apps/jobtracker.png',root/'build/icons/256x256.png',0)])
 with out.open('wb') as f:
  f.write(b'!<arch>\n')
  for name,b in [('debian-binary',b'2.0\n'),('control.tar.gz',control),('data.tar.gz',data)]:

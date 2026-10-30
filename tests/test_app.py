@@ -28,6 +28,8 @@ class PersistenceTests(unittest.TestCase):
   j=app.extract('https://example.com/job',raw)
   self.assertEqual(j['company'],'Acme');self.assertEqual(j['location'],'Boston, MA');self.assertIsNone(j['fit'])
  def test_csv(self):self.assertEqual(app.parse_sheet(b'Title,Company\nEngineer,Acme\n','a.csv')[1],['Engineer','Acme'])
+ def test_windows_excel_csv(self):self.assertEqual(app.parse_sheet('Title,Company\r\nIngénieur,Société\r\n'.encode('cp1252'),'a.csv')[1],['Ingénieur','Société'])
+ def test_utf8_bom_csv(self):self.assertEqual(app.parse_sheet('\ufeffTitle,Company\nIngénieur,Acme\n'.encode('utf-8'),'a.csv')[0],['Title','Company'])
  def test_xlsx_sparse_and_shared(self):
   b=io.BytesIO()
   with zipfile.ZipFile(b,'w') as z:

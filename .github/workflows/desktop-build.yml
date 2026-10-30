@@ -36,6 +36,15 @@ jobs:
       - run: node scripts/package.mjs ${{ matrix.target }} ${{ matrix.arch }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      # Launch the packaged app (bundled Python backend + UI) and fail the build if it does not start.
+      - name: Launch test
+        if: runner.os != 'Linux'
+        run: npm run smoke
+      - name: Launch test (virtual display)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb
+          xvfb-run -a npm run smoke
       - uses: actions/upload-artifact@v4
         with:
           name: JobTracker-${{ matrix.target }}-${{ matrix.arch }}

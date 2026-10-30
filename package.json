@@ -1,6 +1,6 @@
 {
   "name": "waypoint-job-manager",
-  "version": "1.1.8",
+  "version": "1.1.9",
   "description": "Private desktop job application tracker with local AI r\u00e9sum\u00e9 insights",
   "author": "Waypoint contributors",
   "license": "UNLICENSED",
@@ -13,7 +13,8 @@
     "dist:mac": "node scripts/package.mjs mac arm64",
     "dist:win": "node scripts/package.mjs win x64",
     "dist:linux": "node scripts/package.mjs linux x64",
-    "test": "node --test desktop/*.test.cjs"
+    "test": "node --test desktop/*.test.cjs",
+    "smoke": "node scripts/smoke.mjs"
   },
   "devDependencies": {
     "electron": "45.1.0",

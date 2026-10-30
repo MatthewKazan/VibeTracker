@@ -45,6 +45,7 @@ Signing can be configured later using electron-builder's certificate/environment
 
 ```
 npm run dist:mac
+npm run smoke
 node scripts/runtime.mjs win-x64
 node node_modules/electron-builder/out/cli/cli.js --win dir --x64 --publish never
 makensis -DVERSION=<version> scripts/installer.nsi
@@ -53,6 +54,8 @@ node node_modules/electron-builder/out/cli/cli.js --linux dir --x64 --publish ne
 python3 scripts/deb.py
 gh release create v<version> release/JobTracker-<version>-arm64.dmg release/JobTracker-<version>-arm64-mac.zip release/JobTracker-Setup-<version>-x64.exe release/JobTracker-<version>-amd64.deb release/JobTracker-<version>-SHA256.txt
 ```
+
+`npm run smoke` launches the packaged app for the current OS in smoke mode (throwaway profile, no dialogs) and fails unless the backend starts and the interface renders. The GitHub workflow runs it on native Windows, Linux and macOS runners after each build.
 
 ## Mac signing and notarization
 Gatekeeper warnings go away only with a **Developer ID Application** certificate and Apple notarization. An "Apple Development" certificate is only for running builds on your own registered devices, and cannot be used for either. To set up:
