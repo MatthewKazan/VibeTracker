@@ -4,7 +4,7 @@
 
 Find latest release on the right, download and unpack release for your system. Only Mac has been tested
 
-## Start
+## Start from source
 Double-click `Start.command` in Finder. It starts a local server and opens http://127.0.0.1:8765 in your browser. Keep its Terminal window running while using the app. Closing it does not erase saved applications. Python 3 is the only required runtime; no pip installation is needed.
 
 Alternatively, run `python3 app.py` from this folder. If the port is occupied, set `PORT=8766 python3 app.py` and open that port instead.
