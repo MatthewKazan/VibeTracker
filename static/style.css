@@ -35,4 +35,4 @@ th button{padding:11px 12px}td{padding:5px 12px;font-size:12px;line-height:18px}
 dialog{padding:22px}.dialog-foot{margin-top:18px;padding-top:13px}.setup-step{padding:16px 0}.model-card{padding:11px;margin:8px 0}.local-card{padding:14px 5px 0}
 @media(max-width:750px){aside{width:100%;padding:14px}main{margin-left:0;padding:18px 14px}.sidebar-add{margin:0}.filters input{width:60%}.chart{padding:16px}}
 
-tr.jobrow td .sub{display:inline;margin:0 0 0 7px;line-height:18px}
+tr.jobrow td .sub{display:block;margin:2px 0 0;line-height:15px;white-space:normal;max-width:145px}
