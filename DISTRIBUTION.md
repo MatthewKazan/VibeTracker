@@ -3,11 +3,12 @@
 JobTracker is a desktop application with its own window, icon, menu, bundled Python runtime, and local SQLite database. Python, Node.js, and a browser are not prerequisites for recipients. Ollama remains optional and is installed separately. Models are never bundled or downloaded automatically.
 
 ## Recipient packages
-- Windows x64: `JobTracker-Setup-1.0.0-x64.exe`. Per-user installer with Start menu and optional desktop shortcut. Uninstall leaves user data intact.
-- Linux x64: `.AppImage` portable desktop app and `.deb` installer for Debian/Ubuntu. AppImage use depends on the distribution's FUSE/user-namespace support. Do not disable Chromium sandboxing to work around host restrictions; use the Debian package where applicable.
-- Apple Silicon Mac: `JobTracker-1.0.0-arm64-mac.zip`. Unzip and move JobTracker.app to Applications. A DMG target is also available to native build hosts.
+Installers are published as assets on GitHub Releases (`gh release view --web`), each with a `JobTracker-<version>-SHA256.txt` checksum file. They are not committed to Git.
+- Windows x64: `JobTracker-Setup-<version>-x64.exe`. Per-user installer with Start menu and desktop shortcuts. Uninstalling leaves user data intact. SmartScreen shows "Windows protected your PC" for unsigned builds: choose More info → Run anyway.
+- Linux x64: `JobTracker-<version>-amd64.deb` for Debian/Ubuntu: `sudo apt install ./JobTracker-<version>-amd64.deb`.
+- Apple Silicon Mac: `JobTracker-<version>-arm64.dmg` (drag to Applications) or the equivalent `-arm64-mac.zip`. Without a Developer ID signature and notarization, macOS blocks the first launch: open System Settings → Privacy & Security → Open Anyway.
 
-These initial builds do not carry a publisher signing certificate or Apple notarization. The Mac app uses a local ad-hoc signature for executable integrity. Windows may display an unknown-publisher warning; wider public distribution should use trusted publisher signing. No automatic updates are enabled.
+No automatic updates are enabled. To upgrade, recipients install the newer release over the existing one.
 
 ## Data and privacy
 The desktop app uses its OS user profile directory, under `JobTracker/data` (the exact path is available in Profile & data and File → Open data folder). Application updates do not write over that directory. Each friend starts with an empty database. The packaging allowlist excludes your applications, résumé, logs, backups, tests, work files, and source-control metadata.
@@ -39,5 +40,22 @@ Do not build multiple targets simultaneously in the same checkout: `build/runtim
 
 Signing can be configured later using electron-builder's certificate/environment settings. This repository intentionally contains no signing credentials.
 
-## Build verification for this delivery
-Windows NSIS installer and Linux Debian package were built on Apple Silicon using native packaging tools. Their payloads have not been executed on Windows or Linux. The Mac bundle signature and bundled backend were verified; native GUI inspection was unavailable. AppImage and DMG generation were blocked by host tooling; those formats are not included in this delivery. The GitHub workflow remains available for native builds.
+## Releasing from an Apple Silicon Mac
+`npm run dist:win` fails on Apple Silicon because electron-builder's bundled `makensis` is an Intel binary. Build the Windows app folder with electron-builder and then run a native `makensis` against `scripts/installer.nsi`. The Linux `.deb` is assembled by `scripts/deb.py`. Both take the version from `package.json`:
+
+```
+npm run dist:mac
+node scripts/runtime.mjs win-x64
+node node_modules/electron-builder/out/cli/cli.js --win dir --x64 --publish never
+makensis -DVERSION=<version> scripts/installer.nsi
+node scripts/runtime.mjs linux-x64
+node node_modules/electron-builder/out/cli/cli.js --linux dir --x64 --publish never
+python3 scripts/deb.py
+gh release create v<version> release/JobTracker-<version>-arm64.dmg release/JobTracker-<version>-arm64-mac.zip release/JobTracker-Setup-<version>-x64.exe release/JobTracker-<version>-amd64.deb release/JobTracker-<version>-SHA256.txt
+```
+
+## Mac signing and notarization
+Gatekeeper warnings go away only with a **Developer ID Application** certificate and Apple notarization. An "Apple Development" certificate is only for running builds on your own registered devices, and cannot be used for either. To set up:
+1. In Xcode → Settings → Accounts → Manage Certificates, add a Developer ID Application certificate (this requires the account's Account Holder role).
+2. Create an app-specific password at account.apple.com, then store it for notarytool: `xcrun notarytool store-credentials jobtracker-notary --apple-id <apple id> --team-id <team id>`.
+3. Set `"identity"` in the `mac` build config to the Developer ID name, enable `hardenedRuntime` with entitlements that permit the bundled Python runtime, and configure notarization.

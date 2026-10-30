@@ -1,6 +1,6 @@
 Unicode true
 Name "JobTracker"
-OutFile "../release/JobTracker-Setup-1.1.7-x64.exe"
+OutFile "../release/JobTracker-Setup-${VERSION}-x64.exe"
 InstallDir "$LOCALAPPDATA\Programs\JobTracker"
 RequestExecutionLevel user
 Icon "../build/icon.ico"

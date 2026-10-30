@@ -130,10 +130,29 @@ $('#statusColors').onclick=e=>{const b=e.target.closest('[data-status-move]');if
 function renderFlow(){
  const data=jobSankey.build(state.jobs),host=$('#applicationFlow');
  if(!data.total){host.innerHTML='<div class="sankey-empty">Your application journey will appear here as you add jobs.</div>';return;}
- const width=Math.max(1120,400+180*data.nodes.filter(n=>/^Interview \d+$/.test(n.name)||n.name==='Offer').length),terminals=data.nodes.filter(n=>!data.links.some(l=>l.source===n.id)).length,height=Math.ceil(1.2*Math.max(390,terminals*76)),nodeColor=n=>n.root?'#c6c9d2':statusColor(n.name);
+ const width=Math.max(1120,400+180*data.nodes.filter(n=>/^Interview \d+$/.test(n.name)||n.name==='Offer').length),terminals=data.nodes.filter(n=>!data.links.some(l=>l.source===n.id)).length,nodeColor=n=>n.root?'#c6c9d2':statusColor(n.name);let height=Math.ceil(1.2*Math.max(390,terminals*76));
  const order=n=>n.root?-1:/^Interview/.test(n.name)?0:n.name==='Offer'?1:({Accepted:0,'Offer declined':1,Rejected:2,Ghosted:3,Waiting:4,Withdrawn:5}[n.name]??6);
  let graph;try{graph=d3.sankey().nodeId(n=>n.id).nodeWidth(15).nodePadding(55).nodeSort((a,b)=>order(a)-order(b)).nodeAlign(d3.sankeyJustify).extent([[120,48],[width-190,height-48]]).iterations(64)({nodes:data.nodes.map(n=>({...n})),links:data.links.map(l=>({...l}))});}catch(e){host.textContent='The chart could not be laid out. Your applications are saved. Reload JobTracker to retry.';return;}
- const occupied=graph.nodes.flatMap(n=>{const root=!!n.root,terminal=!n.sourceLinks.length,x=root?n.x0-15:terminal?n.x1+15:n.x0,y=root||terminal?(n.y0+n.y1)/2-5:21,w=Math.max(150,n.name.length*9);return [{x:n.x0-5,y:n.y0-6,w:n.x1-n.x0+10,h:n.y1-n.y0+12},{x:root?x-w-5:x-5,y:y-24,w:w+10,h:70}]}),labels=[];
+ // Keep interview progression in a dedicated upper lane, above the outcome ribbons.
+ if(graph.nodes.some(n=>n.sourceLinks.length&&!n.root)){
+  const scale=.7;for(const l of graph.links)l.width*=scale;
+  // The lane grows with its tallest stage so large interview counts are not pushed off the top.
+  const lane=48+Math.max(17,...graph.nodes.filter(n=>n.sourceLinks.length&&!n.root).map(n=>(n.y1-n.y0)*scale/2));
+  let outcomeY=lane+80;
+  for(const n of [...graph.nodes].sort((a,b)=>order(a)-order(b))){const h=(n.y1-n.y0)*scale;
+   if(n.root)n.y0=lane+45;
+   else if(n.sourceLinks.length)n.y0=lane-h/2;
+   else {n.y0=outcomeY;outcomeY+=h+45;}
+   n.y1=n.y0+h;
+  }
+  height=Math.max(height,Math.ceil(Math.max(...graph.nodes.map(n=>n.y1))+48));
+  for(const n of graph.nodes){
+   n.sourceLinks.sort((a,b)=>(a.target.sourceLinks.length?0:1)-(b.target.sourceLinks.length?0:1)||a.target.y0-b.target.y0);
+   n.targetLinks.sort((a,b)=>b.source.depth-a.source.depth);
+  }
+  d3.sankey().update(graph);
+ }
+ const occupied=graph.nodes.flatMap(n=>{const root=!!n.root,terminal=!n.sourceLinks.length,x=root?n.x0-15:terminal?n.x1+15:n.x0,y=root||terminal?(n.y0+n.y1)/2-5:n.y0-28,w=Math.max(100,n.name.length*7);return [{x:n.x0-5,y:n.y0-6,w:n.x1-n.x0+10,h:n.y1-n.y0+12},{x:root?x-w-5:x-5,y:y-18,w:w+10,h:44}]}),labels=[];
  const paths=graph.links.map((l,i)=>{const from=l.source,to=l.target,start=from.x1,end=to.x0,m=(start+end)/2;let chosen=null;
  for(const t of [.5,.35,.65,.25,.75,.15,.85,.08,.92]){const u=1-t,x=u*u*u*start+3*u*u*t*m+3*u*t*t*m+t*t*t*end,y=u*u*u*l.y0+3*u*u*t*l.y0+3*u*t*t*l.y1+t*t*t*l.y1,box={x:x-14,y:y-10,w:28,h:20};if(!occupied.some(b=>box.x<b.x+b.w&&box.x+box.w>b.x&&box.y<b.y+b.h&&box.y+box.h>b.y)){chosen={x,y,box};break;}}
  if(!chosen){for(let offset=18;offset<height&&!chosen;offset+=18){for(const sign of [-1,1]){const x=m,base=(l.y0+l.y1)/2,y=base+sign*offset,box={x:x-14,y:y-10,w:28,h:20};if(y>12&&y<height-12&&!occupied.some(b=>box.x<b.x+b.w&&box.x+box.w>b.x&&box.y<b.y+b.h&&box.y+box.h>b.y)){chosen={x,y,box};labels.push(`<path d="M${x},${base}L${x},${y}" stroke="#858585" stroke-width=".6" opacity=".65"/>`);break;}}}}
@@ -141,7 +160,7 @@ function renderFlow(){
  const detail=`${from.name} → ${to.name}: ${l.value} applications (${Math.round(l.value/data.total*100)}% of all applications). ${l.inferred?l.inferred+' paths use inferred earlier stages.':''}`;
  return `<linearGradient id="ribbon${i}" gradientUnits="userSpaceOnUse" x1="${start}" x2="${end}"><stop stop-color="${nodeColor(from)}" stop-opacity=".3"/><stop offset="1" stop-color="${nodeColor(to)}" stop-opacity=".62"/></linearGradient><path class="sankey-ribbon" tabindex="0" data-flow-detail="${esc(detail)}" d="${d3.sankeyLinkHorizontal()(l)}" fill="none" stroke="url(#ribbon${i})" stroke-width="${l.width}"><title>${esc(detail)}</title></path>`;
  }).join('');
- const nodes=graph.nodes.map(n=>{const terminal=!n.sourceLinks.length,root=!!n.root,label=n.name.replace('Interview ','Round '),x=root?n.x0-15:terminal?n.x1+15:n.x0,y=root||terminal?(n.y0+n.y1)/2-5:21,anchor=root?'end':'start',detail=root?'submitted':terminal?'currently':`${n.current} currently`; return `<g><title>${esc(n.name)}: ${n.value} reached, ${n.current} currently</title><rect x="${n.x0}" y="${n.y0}" width="15" height="${Math.max(n.y1-n.y0,1)}" rx="3" fill="${nodeColor(n)}"/><text class="sankey-name" x="${x}" y="${y}" text-anchor="${anchor}">${esc(label.length>21?label.slice(0,20)+'…':label)}</text><text x="${x}" y="${y+20}" text-anchor="${anchor}" class="sankey-value">${n.value}<tspan class="sankey-note"> · ${esc(detail)}</tspan></text></g>`;
+ const nodes=graph.nodes.map(n=>{const terminal=!n.sourceLinks.length,root=!!n.root,label=n.name.replace('Interview ','Round '),x=root?n.x0-15:terminal?n.x1+15:n.x0,y=root||terminal?(n.y0+n.y1)/2-5:n.y0-28,anchor=root?'end':'start',detail=root?'submitted':terminal?'currently':n.current?`${n.current} active`:'reached'; return `<g><title>${esc(n.name)}: ${n.value} reached, ${n.current} currently</title><rect x="${n.x0}" y="${n.y0}" width="15" height="${Math.max(n.y1-n.y0,1)}" rx="3" fill="${nodeColor(n)}"/><text class="sankey-name" x="${x}" y="${y}" text-anchor="${anchor}">${esc(label.length>21?label.slice(0,20)+'…':label)}</text><text x="${x}" y="${y+20}" text-anchor="${anchor}" class="sankey-value">${n.value}<tspan class="sankey-note"> · ${esc(detail)}</tspan></text></g>`;
  }).join('');
  host.innerHTML=`<div class="sankey-summary"><span><b>${data.total}</b> applications</span><span><i></i>Width = application count</span><div><button type="button" onclick="this.closest('#applicationFlow').querySelector('svg').style.minWidth='0'">Fit</button><button type="button" onclick="this.closest('#applicationFlow').querySelector('svg').style.minWidth='${width}px'">100%</button></div></div><div class="flow-canvas"><svg class="job-sankey" viewBox="0 0 ${width} ${height}" role="img" aria-label="Sankey diagram of ${data.total} applications through interview rounds and current statuses">${paths}${nodes}${labels.join('')}</svg></div><p id="sankeyDetail" class="sankey-detail" role="status">Hover over a ribbon for its exact path and count.</p><details class="sankey-method"><summary>How this is counted</summary><p>Each application follows one forward journey to its current status. Stage counts show applications that reached that stage; final statuses show current counts. Missing earlier rounds may be inferred. Reopened applications are summarized on their current path, so previous outcomes are not counted twice. ${data.inferredJobs} application(s) contain inferred stages.</p></details>`;
  const detail=$('#sankeyDetail');host.querySelectorAll('[data-flow-detail]').forEach(p=>{const show=()=>{detail.textContent=p.dataset.flowDetail;};p.onmouseenter=show;p.onfocus=show;p.onclick=show;});

@@ -21,3 +21,11 @@ outputs/
 *.csv
 *.pdf
 *.docx
+
+# Built installers belong on GitHub Releases, not in git
+*.dmg
+*.zip
+*.exe
+*.deb
+*.AppImage
+*.blockmap
