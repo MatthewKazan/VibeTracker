@@ -30,7 +30,9 @@ button{padding:7px 11px}input,select,textarea{padding:8px 10px}
 aside{width:188px;padding:24px 15px}.brand{font-size:27px}.sidebar-add{margin-top:24px}.aside-label{margin:24px 8px 12px}nav button{padding:9px 10px;margin:2px 0}
 main{margin-left:188px;padding:22px 24px}header{gap:16px;margin-bottom:18px}h1{font-size:25px}.applied{gap:16px;padding:6px 12px}
 .toolbar{padding:14px 16px;gap:12px}.filters{gap:8px}.filters input{width:230px}.sort-panel{padding:11px 16px}.sort-rule{margin:7px 0;gap:8px}
-th button{padding:11px 12px}td{padding:10px 12px;font-size:12px}.sub{margin-top:3px}.badge{padding:4px 7px}.fit-button{padding:5px 8px}footer{padding:11px 16px}
+th button{padding:11px 12px}td{padding:5px 12px;font-size:12px;line-height:18px}.sub{margin-top:3px}.badge{padding:1px 6px;line-height:16px}.fit-button{padding:1px 7px;line-height:18px}footer{padding:11px 16px}
 .stats{gap:12px;margin-bottom:20px}.stat{padding:16px 18px}.stat strong{font-size:29px;margin:8px 0 3px}.chart-grid{gap:16px}.chart{padding:20px}.chart>p{margin-bottom:18px}.barrow{margin:14px 0}
 dialog{padding:22px}.dialog-foot{margin-top:18px;padding-top:13px}.setup-step{padding:16px 0}.model-card{padding:11px;margin:8px 0}.local-card{padding:14px 5px 0}
 @media(max-width:750px){aside{width:100%;padding:14px}main{margin-left:0;padding:18px 14px}.sidebar-add{margin:0}.filters input{width:60%}.chart{padding:16px}}
+
+tr.jobrow td .sub{display:inline;margin:0 0 0 7px;line-height:18px}
