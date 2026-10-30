@@ -26,6 +26,13 @@ class HTTPRecoveryTests(unittest.TestCase):
     self.assertEqual(len(get('state')['jobs']),1)
     snaps=get('snapshots')['snapshots'];self.assertTrue(snaps)
     self.assertEqual(get('snapshot?name='+snaps[0])['jobs'][0]['title'],'Crash recovery')
+    self.assertTrue(st['jobs'][0]['applied_at'])
+    entries=[{'question':'Why this company?','answer':'Mission and robotics.','group':'Motivation'}]
+    post('settings',{'questions':entries,'question_groups':['Motivation']},st['token'])
+    self.assertEqual(get('export')['settings']['questions'],entries)
+    with self.assertRaises(urllib.error.HTTPError):post('settings',{'questions':[{'question':'','answer':'Bad'}]},st['token'])
+    post('restore',{'jobs':[],'settings':{'questions':entries,'question_groups':['Motivation']}},st['token'])
+    self.assertEqual(get('state')['settings']['question_groups'],['Motivation'])
     jobid=st['jobs'][0]['id']
     post('settings',{'resume':'Python SQL'},st['token'])
     post('job',{'id':jobid,'description':'Python SQL Docker'},st['token'])

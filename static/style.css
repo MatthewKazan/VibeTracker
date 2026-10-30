@@ -49,3 +49,8 @@ body.sidebar-collapsed .brand,body.sidebar-collapsed .aside-label,body.sidebar-c
 body.sidebar-collapsed .aside-top{justify-content:center}body.sidebar-collapsed nav button,body.sidebar-collapsed .sidebar-add,body.sidebar-collapsed .ai-setup{justify-content:center;padding:10px 0;gap:0}
 }
 @media(max-width:750px){.sidebar-toggle{display:none}}
+
+/* Reusable question and answer library */
+.qa-actions{display:flex;gap:8px;flex-wrap:wrap}.qa-search{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 16px 16px}.qa-search input{width:min(420px,100%)}#qaStatus{font-size:12px;color:#aaa}.qa-list{padding:0 16px 16px;display:grid;gap:12px}.qa-card{border:1px solid #393939;border-radius:10px;padding:18px;background:#242424}.qa-card h3{margin:0 0 12px;font-size:16px;white-space:pre-wrap;overflow-wrap:anywhere}.qa-answer{white-space:pre-wrap;overflow-wrap:anywhere;color:#bdbdbd;line-height:1.65;max-height:230px;overflow:auto;margin-bottom:16px}.qa-card .qa-actions button{font-size:12px}.qa-card .qa-actions button:last-child{margin-left:auto}#qaDialog,#qaPasteDialog{width:min(680px,95vw)}#qaCount{color:#999;font-weight:400}.qa-empty{text-align:center;padding:50px 20px;color:#aaa}.qa-empty h3{color:#eee}@media(max-width:750px){#questions .toolbar,.qa-search{align-items:stretch;flex-direction:column}.qa-search input{width:100%}}
+
+.qa-list{grid-template-columns:repeat(auto-fit,minmax(min(350px,100%),1fr));align-items:start}.qa-group{border:1px solid #444;padding:14px;border-radius:12px;min-height:120px}.qa-group>header{margin:0 0 12px;display:flex;justify-content:space-between;align-items:center;cursor:grab}.qa-group h3{margin:0}.qa-group .qa-card{margin-bottom:10px}.qa-card[draggable]{cursor:grab}

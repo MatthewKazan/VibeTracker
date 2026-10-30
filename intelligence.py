@@ -187,12 +187,12 @@ def extract_items(sents,model,system):
  key=hashlib.sha256(json.dumps([sents,STAGE1_VERSION,model]).encode()).hexdigest()
  if key not in STAGE1_CACHE:
   prompt=STAGE1+'\nPOSTING:\n'+'\n'.join(f'S{i} {s}' for i,s in enumerate(sents,1))+'\n\nReturn only {"items":[...]}.'
-  raw=ask(model,prompt,system,lambda r:None if isinstance(r.get('items'),list) else 'answer must be {"items":[...]}',1500)
+  raw=ask(model,prompt,system,lambda r:None if isinstance(r.get('items'),list) and r['items'] else 'items must be a nonempty list of requirements with req and integer sent referencing an S-number',3000)
   if raw is None:raise ValueError('The model could not list the job requirements. Retry or select a different model.')
   items={}
   for n,it in enumerate(raw['items']):
    if not isinstance(it,dict):continue
-   try:sid=int(it.get('sent'))
+   try:sid=int(str(it.get('sent','')).strip().lstrip('Ss'))
    except (TypeError,ValueError):continue
    req=str(it.get('req','')).strip()[:300]
    if not req or not 1<=sid<=len(sents) or BOILERPLATE.search(sents[sid-1]):continue
@@ -255,7 +255,10 @@ def analyze(description,resume,model,memory="",conversation=None,system=None,ins
  facts=facts[-40:]
  sents=sentences(description)
  items=extract_items(sents,model,system)
- if not items:raise ValueError('The model did not return verifiable evidence. Try another model or shorten the posting.')
+ if not items:
+  # Preserve exact source sentences when the small model cannot produce valid references.
+  items=[{'req':t[:300],'sent':i,'importance':'required','kind':'skill','group':str(i)} for i,t in enumerate(sents,1) if not BOILERPLATE.search(t) and re.search(r'experience|proficien|degree|ability|knowledge|familiar|must|skill|evidence|foundation',t,re.I)][:MAX_ITEMS]
+ if not items:raise ValueError('No requirements found in the saved description. Paste the actual posting text and retry.')
  # Everything before REQUIREMENT is identical across calls so Ollama can reuse its prompt cache.
  prefix=STAGE2.replace('{instructions}',instructions)+'\nTODAY: '+current_date+'\nRÉSUMÉ:\n'+'\n'.join(f'L{i} {t}{date_note(t,today)}' for i,t in enumerate(lines,1))+'\nFACTS FROM THE USER (true; count as evidence):\n'+('\n'.join(f'F{i} {t}' for i,t in enumerate(facts,1)) or 'none')+'\n'
  rows=[judge(it,sents,lines,facts,prefix,model,system,shortcut) for it in items]

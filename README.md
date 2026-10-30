@@ -73,3 +73,10 @@ Insights includes a Sankey diagram with separate interview rounds, one node per 
 
 ## Development
 Use Node.js 24 and Python 3.12 or newer. Run `npm ci`, then `npm test` and `python3 -B -m unittest discover -s tests`. Run `python3 app.py` for browser development or see DISTRIBUTION.md for desktop builds. Personal databases, backups, local test data, generated installers, and credentials are excluded from Git.
+
+## Version 1.2.0
+Questions & answers stores reusable responses in named groups. Drag groups to reorder them and drag cards between groups. Copy questions, answers, pairs, or the whole library; bulk paste accepts Q:/A: pairs. Text search is immediate; Search by meaning uses your selected local model to rank saved records in small batches, with no generated answers. Question groups and their order are included in full backups.
+
+New applications record a timezone-aware save time. Hover over the applied date to see it; date sorting breaks same-day ties using that instant. Older records without a recorded application time show “Time not recorded.” Existing sort priorities remain configurable.
+
+Autofill now reads page metadata, matching role objects in same-origin JavaScript bundles, and Gem's public posting API. HTML paragraph and list boundaries are preserved. Fit extraction accepts S-prefixed sentence references and falls back to source requirement sentences when model references fail, while retaining evidence checks during scoring.
