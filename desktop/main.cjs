@@ -59,7 +59,7 @@ async function start(){
   // Pass only if the backend answered and the interface actually rendered the application list.
   const rendered=await win.webContents.executeJavaScript("new Promise(resolve=>{const start=Date.now();function check(){const result={ready:!!document.querySelector('#navcount')&&document.querySelector('#rows')!==null&&typeof window.openEmailReview==='function'&&typeof state!=='undefined'&&!!state.token,review:typeof window.openEmailReview,stateReady:typeof state!=='undefined'&&!!state.token,error:document.querySelector('#errorText')?.textContent||''};if(result.ready||Date.now()-start>15000)resolve(result);else setTimeout(check,250)}check()})");
   if(!rendered.ready)throw Error('The interface did not render: '+JSON.stringify(rendered));
-  const mailBridge=await win.webContents.executeJavaScript("window.jobtrackerMail.status().then(result=>typeof result.secureStorage==='boolean')");
+  const mailBridge=await win.webContents.executeJavaScript("window.jobtrackerMail.status().then(result=>typeof result.busy==='boolean')");
   if(!mailBridge)throw Error('The desktop mail connection bridge did not initialize.');
   smokeResult('ok '+app.getVersion());setTimeout(()=>app.quit(),1000);
  }

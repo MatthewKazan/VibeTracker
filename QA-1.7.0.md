@@ -16,6 +16,8 @@ Interactive tests use a disposable synthetic profile with mock jobs and confirma
 
 Native packaged smoke tests require bundled Python startup, actual UI readiness and a live request through the isolated mail IPC bridge. The desktop build workflow runs the complete suites and installer/smoke tests on native macOS ARM64, Windows x64 and Linux x64 runners. Release publication is gated on successful native build results. Artifacts are checksummed after download.
 
+A repeated local packaged launch exposed synchronous Keychain checks blocking the main process. Credential access now uses Electron's asynchronous APIs, and merely showing connection status does not initialize the credential store. Startup restores cannot block rendering; uncertain or plaintext Linux stores require session-only use.
+
 ## Limits and privacy
 
 No actual mail was sent, changed, marked read or seeded. No real application was approved or modified as a test. Provider exchanges and IMAP fixtures use synthetic responses; live Gmail/Outlook consent and a real IMAP server are not tested here. A user-provided registered OAuth client or app password is necessary. Generic IMAP OAuth, background agents/IDLE, Exchange's separate online archive and public preconfigured/verified Google OAuth registration are not included. Linux persistence needs an available secret store, otherwise session-only connection is offered. Oversized text is visible with a warning and receives no status proposal. See EMAIL_PORTABILITY.md for setup and remaining limits.
