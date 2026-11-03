@@ -5,11 +5,17 @@ import re
 import subprocess
 import sys
 import threading
+import tempfile
+import time
 import unicodedata
 from urllib.parse import quote
 from pathlib import Path
 from urllib.parse import urlparse
 
+SCAN_CANCEL=threading.Event()
+LAST_SCAN_FINISHED=0.0
+SCAN_GENERATION=0
+ACTIVE_MAIL_READER=None
 SYNC_LOCK = threading.Lock()
 SYNC = {'running': False, 'error': '', 'summary': ''}
 
@@ -308,23 +314,59 @@ def decorate_messages(c,messages):
         for row in c.execute('SELECT message_id,job_id,status FROM email_decisions WHERE message_id IN ('+marks+')',ids):by_id[row['message_id']]['decisions'].append({'job_id':row['job_id'],'status':row['status']})
         for m in batch:m['mail_url']='message://%3C'+quote(m['message_id'].strip('<>'),safe='')+'%3E'
 
-def read_mail(since, until, account_id, profiles=None):
-    if sys.platform != 'darwin': raise ValueError('Apple Mail sync is available on macOS only.')
+def mail_script(args,timeout=10):
+    global ACTIVE_MAIL_READER
+    process=subprocess.Popen(['/usr/bin/osascript','-l','JavaScript',str(Path(__file__).with_name('mail_reader.js')),*args],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    ACTIVE_MAIL_READER=process
+    started=time.monotonic()
     try:
-        result = subprocess.run(['/usr/bin/osascript','-l','JavaScript',str(Path(__file__).with_name('mail_reader.js')),since,until,account_id,json.dumps(profiles or [])],capture_output=True,text=True,timeout=180)
-    except subprocess.TimeoutExpired:
-        raise ValueError('Apple Mail timed out. Open Mail, let it finish downloading, then retry. The checkpoint is unchanged.') from None
-    if result.returncode:
-        raise ValueError('Could not read Apple Mail. Allow automation of Mail in System Settings → Privacy & Security → Automation, then retry. The checkpoint is unchanged. '+result.stderr.strip()[:350])
-    return json.loads(result.stdout)
+        while True:
+            if SCAN_CANCEL.is_set():raise ValueError('Mail scan paused. Checkpoint unchanged for the unfinished batch.')
+            if time.monotonic()-started>timeout:raise ValueError('Apple Mail timed out. The unfinished batch will be retried; checkpoint unchanged.')
+            try:
+                out,err=process.communicate(timeout=0.1)
+                if process.returncode:raise ValueError('Could not read Apple Mail. Checkpoint unchanged. '+err.strip()[:350])
+                return json.loads(out)
+            except subprocess.TimeoutExpired:pass
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:process.communicate(timeout=1)
+            except subprocess.TimeoutExpired:process.kill();process.communicate()
+        if ACTIVE_MAIL_READER is process:ACTIVE_MAIL_READER=None
 
-def sync(app):
+def read_mail(since, until, account_id, profiles=None, options=None):
+    if sys.platform != 'darwin':raise ValueError('Apple Mail sync is available on macOS only.')
+    # Use a private file rather than command-line JSON: a large cache can exceed
+    # ARG_MAX, and message IDs/company terms should not appear in process listings.
+    with tempfile.TemporaryDirectory(prefix='jobtracker-mail-') as folder:
+        path=Path(folder)/'input.json'
+        path.write_text(json.dumps({'argv':[since,until,account_id,json.dumps(profiles or [])],'options':options or {}}));path.chmod(0o600)
+        return mail_script(['batch',str(path)])
+
+def pause_sync():
+    global SCAN_GENERATION
+    SCAN_GENERATION+=1
+    SCAN_CANCEL.set()
+    reader=ACTIVE_MAIL_READER
+    if reader is not None and reader.poll() is None:
+        try:reader.terminate()
+        except ProcessLookupError:pass
+    SYNC['summary']='Pausing Mail scan…' if SYNC['running'] else 'Automatic Mail scanning paused.'
+    return {'ok':True}
+
+def sync(app,generation=None):
     import mail_pipeline
-    return mail_pipeline.sync(app)
+    return mail_pipeline.sync(app,generation)
 
 def start_sync(app):
-    threading.Thread(target=sync,args=(app,),daemon=True).start()
+    if SYNC['running']:return {'ok':True}
+    if LAST_SCAN_FINISHED and time.monotonic()-LAST_SCAN_FINISHED<15:raise ValueError('Mail is resting between batches. Try again in a few seconds.')
+    threading.Thread(target=sync,args=(app,SCAN_GENERATION),daemon=True).start()
     return {'ok':True}
+
+def automatic_due(app):
+    return app.settings().get('mail_enabled') is True and time.monotonic()-LAST_SCAN_FINISHED>=300
 
 def worker(app):
     import time,mail_pipeline
@@ -335,7 +377,8 @@ def worker(app):
     for message_id in interrupted:start_feedback(app,message_id)
     while True:
         try:
-            if app.settings().get('mail_enabled') is True: sync(app)
+            generation=SCAN_GENERATION
+            if automatic_due(app):sync(app,generation)
         except Exception as exc: SYNC['error']=str(exc)
         time.sleep(60)
 
@@ -351,7 +394,7 @@ def restore(c, data, job_map):
         c.execute('INSERT INTO emails (message_id,sender,subject,body,received_at,company,match_kind,evidence,rejection,review) VALUES (?,?,?,?,?,?,?,?,?,?)',tuple(m[k] for k in ('message_id','sender','subject','body','received_at','company','match_kind','evidence'))+(int(bool(m.get('rejection'))),m['review']))
         if m.get('invitation'):c.execute('UPDATE emails SET invitation=1 WHERE message_id=?',(m['message_id'],))
         category=m.get('category') or ('rejection' if m.get('rejection') else 'interview' if m.get('invitation') else 'confirmation' if confirmation_evidence(m) else 'other')
-        if category not in ('rejection','interview','offer','confirmation','other'):raise ValueError('Invalid email category in backup.')
+        if category not in ('rejection','interview','offer','confirmation','job_ad','other'):raise ValueError('Invalid email category in backup.')
         c.execute('UPDATE emails SET category=?,analysis_version=?,ignored_from=? WHERE message_id=?',(category,m.get('analysis_version',''),m.get('ignored_from',''),m['message_id']))
         c.execute('UPDATE emails SET analysis_state=?,analysis_error=?,ignore_source=?,body_version=?,analysis_revision=? WHERE message_id=?',(m.get('analysis_state','done') if m.get('analysis_state')!='running' else 'queued',m.get('analysis_error',''),m.get('ignore_source',''),m.get('body_version',0),m.get('analysis_revision',0),m['message_id']))
         restored.add(m['message_id'])
@@ -470,11 +513,9 @@ def table_rows(c,name):
     return [dict(r) for r in c.execute('SELECT * FROM '+name)]
 
 
-def read_bounds(account_id):
+def read_bounds(account_id,progress=None):
     try:
-        result=subprocess.run(['/usr/bin/osascript','-l','JavaScript',str(Path(__file__).with_name('mail_reader.js')),'bounds','',account_id],capture_output=True,text=True,timeout=45)
-        if result.returncode:return None
-        data=json.loads(result.stdout)
+        data=mail_script(['bounds','',account_id,'',json.dumps(progress or {})])
         return data if isinstance(data,dict) and 'oldest' in data else None
     except Exception:return None
 

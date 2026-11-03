@@ -480,12 +480,15 @@ def sync_locked(app,account,jobs):
     with app.connect() as c:
         empty=[r[0] for r in c.execute("SELECT r.remote_id FROM email_source_refs r JOIN emails e USING(message_id) WHERE r.account_id=? AND r.body_complete=0 AND length(trim(e.body))=0 AND e.review NOT IN ('approved','dismissed','ignored') LIMIT 20",(account['id'],))]
     for ident in empty:
+        if mail.SCAN_CANCEL.is_set():mail.SYNC['summary']='Email scan paused.';return
         message=adapter.message(ident)
         if message is not None:recovery.append(message)
     count=0
     while True:
+        if mail.SCAN_CANCEL.is_set():mail.SYNC['summary']='Email scan paused.';return
         mail.SYNC['summary']='Collecting '+account['provider']+' messages; each completed page is saved before AI analysis.'
         messages,next_cursor,done=adapter.page(cursor)
+        if mail.SCAN_CANCEL.is_set():mail.SYNC['summary']='Email scan paused. Unfinished page checkpoint retained.';return
         messages=recovery+messages;recovery=[]
         with app.LOCK,app.connect() as c:
             selected=mail.get_setting(c,'mail_account') or {}

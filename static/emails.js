@@ -28,7 +28,8 @@ function renderEmails(){
  $('#mailEnabled').checked=state.settings.mail_enabled===true;
  $('#mailEnabled').disabled=!emailState.available||!emailState.account;
  $('#mailSync').disabled=w.running||!emailState.available||!emailState.account;$('#mailRescan').disabled=w.running||!emailState.available||!emailState.account;
- $('#mailSync').textContent=w.running?'Checking Mail…':'Check emails since last sync';
+ $('#mailSync').textContent=w.running?'Reading a small batch…':'Scan next small batch';
+ $('#mailPause').hidden=!w.running;
  $('#mailSyncStatus').textContent=w.error||w.summary||(sync.through?'Checked through '+new Date(sync.through).toLocaleString():'Collection searches company mentions across the selected account’s history.');
  $('#mailSyncStatus').classList.toggle('mail-error',Boolean(w.error));
  if(emailState.queued||emailState.failed)$('#mailSyncStatus').textContent+=` · ${emailState.queued||0} saved emails awaiting classification${emailState.failed?' · '+emailState.failed+' analyses need retry':''}`;
@@ -71,6 +72,7 @@ let emailSearchTimer;$('#mailSearch').oninput=()=>{emailSelected=null;emailVisib
 $('#mailType').addEventListener('change',()=>{if($('#mailType').value==='job_ad'){$('#mailShowAds').checked=true;loadEmails()}});
 $('#mailShowAds').addEventListener('change',()=>{if(!$('#mailShowAds').checked&&$('#mailType').value==='job_ad'){$('#mailType').value='';loadEmails()}});
 $('#mailClearFilters').onclick=()=>{for(const id of ['mailSearch','mailType','mailFrom','mailTo'])$('#'+id).value='';for(const id of ['mailPending','mailExcludeConfirmations','mailShowIgnored','mailShowAds'])$('#'+id).checked=false;emailVisibleLimit=200;loadEmails()};
+$('#mailPause').onclick=async()=>{try{await api('emails/pause',{});state.settings.mail_enabled=false;await loadEmails()}catch(e){toast(e.message)}};
 $('#mailSync').onclick=async()=>{try{await api('emails/sync',{});emailState.worker.running=true;renderEmails()}catch(e){toast(e.message)}};
 $('#mailEnabled').onchange=async e=>{try{await api('emails/settings',{enabled:e.target.checked});state.settings.mail_enabled=e.target.checked;await loadEmails()}catch(err){toast(err.message);e.target.checked=!e.target.checked}};
 let emailRevision=-1,emailPollBusy=false;

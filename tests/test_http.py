@@ -20,6 +20,7 @@ class HTTPRecoveryTests(unittest.TestCase):
     with urllib.request.urlopen(req) as r:return json.load(r)
    try:
     st=start()
+    post('emails/pause',{},st['token']);self.assertFalse(get('state')['settings']['mail_enabled'])
     self.assertEqual(st['version'],json.loads((ROOT/'package.json').read_text())['version'])
     prefs=get('notification-preferences');self.assertEqual(prefs['ad_mode'],'never')
     prefs.update(ad_mode='keywords',ad_keywords=['Boston Dynamics','humanoid'],sound=False)

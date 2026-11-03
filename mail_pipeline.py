@@ -229,8 +229,11 @@ def collect(c,messages,jobs,account_id):
     if messages:touch(c)
     return added
 
-def sync(app):
+def sync(app,generation=None):
     if not mail.SYNC_LOCK.acquire(blocking=False):return
+    if generation is not None and generation!=mail.SCAN_GENERATION:
+        mail.SYNC_LOCK.release();return
+    mail.SCAN_CANCEL.clear()
     mail.SYNC.update(running=True,error='',summary='Collecting company emails…')
     try:
         with app.connect() as c:
@@ -242,63 +245,11 @@ def sync(app):
             profiles=company_profiles(jobs)
             if not profiles:raise ValueError('Add a company name to an application before syncing Mail.')
             cursor=mail.checkpoint(c,account['id'])
-        fingerprint=hashlib.sha256(json.dumps(profiles,sort_keys=True).encode()).hexdigest()
-        until=now();end=dt.datetime.fromisoformat(until)
-        valid=cursor.get('collection_version')==VERSION and cursor.get('companies')==fingerprint
-        bounds=None if valid and cursor.get('history_oldest') else mail.read_bounds(account['id'])
-        oldest_text=cursor.get('history_oldest') if valid else None
-        if bounds is not None:oldest_text=bounds.get('oldest')
-        elif not oldest_text:oldest_text='1970-01-01T00:00:00+00:00'
-        tasks=[]
-        if valid and cursor.get('through'):
-            tasks.append(((dt.datetime.fromisoformat(cursor['through'])-dt.timedelta(days=2)).isoformat(),until,False))
-        with app.connect() as c:
-            incomplete=c.execute("SELECT min(e.received_at) FROM emails e JOIN email_accounts a USING(message_id) WHERE a.account_id=? AND trim(e.body)='' AND e.review NOT IN ('approved','dismissed','ignored')",(account['id'],)).fetchone()[0]
-        if valid and incomplete and cursor.get('through') and incomplete<cursor['through']:
-            # Recover old headers-only messages without moving the history cursor.
-            left=dt.datetime.fromisoformat(incomplete.replace('Z','+00:00'));right=end
-            while right>left:
-                lower=max(left,right-dt.timedelta(days=31));tasks.append((lower.isoformat(),right.isoformat(),False));right=lower
-        if oldest_text:
-            oldest=dt.datetime.fromisoformat(oldest_text.replace('Z','+00:00'))
-            right=dt.datetime.fromisoformat(cursor.get('history_before',until)) if valid else end
-            # Collect newest history first: relevant recent statuses arrive promptly,
-            # and approvals can suppress obsolete older mail before AI sees it.
-            while right>oldest:
-                lower=max(oldest,right-dt.timedelta(days=31))
-                tasks.append((lower.isoformat(),right.isoformat(),True));right=lower
-        elif not valid and bounds is None:
-            tasks.append(('1970-01-01T00:00:00+00:00',until,True))
-        if not tasks:tasks=[(until,until,False)]
-        total=0
-        while tasks:
-            since,window_end,history=tasks.pop(0)
-            mail.SYNC['summary']=f'Collecting company matches: {since[:10]} through {window_end[:10]}…'
-            try:messages=mail.read_mail(since,window_end,account['id'],profiles) if since!=window_end else []
-            except Exception as exc:
-                left=dt.datetime.fromisoformat(since);right=dt.datetime.fromisoformat(window_end)
-                if ('timed out' in str(exc).lower() or 'timeout' in str(exc).lower()) and right-left>dt.timedelta(days=1):
-                    mid=(left+(right-left)/2).isoformat()
-                    smaller=[(since,mid,history),(mid,window_end,history)]
-                    tasks[0:0]=list(reversed(smaller)) if history else smaller
-                    continue
-                raise
-            with app.LOCK:
-                app.backup()
-                with app.connect() as c:
-                    total+=collect(c,messages,jobs,account['id'])
-                    previous=mail.checkpoint(c,account['id'])
-                    last=max(messages,key=lambda m:dt.datetime.fromisoformat(m['received_at'].replace('Z','+00:00'))) if messages else None
-                    highwater=until if history else max(window_end,previous.get('through',window_end))
-                    values={'through':highwater,'collection_version':VERSION,'companies':fingerprint,'history_oldest':oldest_text or '','history_before':since if history else previous.get('history_before',oldest_text or until),'last_message_id':previous.get('last_message_id',''),'last_received_at':previous.get('last_received_at','')}
-                    if last and (not values['last_received_at'] or dt.datetime.fromisoformat(last['received_at'].replace('Z','+00:00'))>dt.datetime.fromisoformat(values['last_received_at'].replace('Z','+00:00'))):
-                        values.update(last_message_id=last['message_id'],last_received_at=last['received_at'])
-                    for k,v in values.items():c.execute('INSERT OR REPLACE INTO mail_checkpoints VALUES (?,?,?)',(account['id'],k,v))
-                try:app.backup()
-                except Exception:pass
-            mail.SYNC['summary']=f'Collected {total} new company emails. Saved history through {since[:10]}. AI classifies the saved queue separately.'
-    except Exception as exc:mail.SYNC['error']=str(exc)
-    finally:mail.SYNC['running']=False;mail.SYNC_LOCK.release()
+        __import__('mail_scanner').scan(app,account,jobs,profiles)
+    except Exception as exc:
+        if mail.SCAN_CANCEL.is_set():mail.SYNC.update(error='',summary='Mail scan paused. Saved batches and checkpoint retained.')
+        else:mail.SYNC['error']=str(exc)
+    finally:mail.SYNC['running']=False;mail.LAST_SCAN_FINISHED=time.monotonic();mail.SYNC_LOCK.release()
 
 def normalize_quote(text):
     text=unicodedata.normalize('NFKC',html.unescape(text)).translate(str.maketrans({'“':'"','”':'"','‘':"'",'’':"'",'–':'-','—':'-'}))

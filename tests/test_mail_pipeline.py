@@ -189,7 +189,11 @@ class PipelineTests(unittest.TestCase):
             if len(calls)==1:raise ValueError('Mail timed out')
             return []
         with patch.object(mail,'read_bounds',return_value=bounds),patch.object(mail,'read_mail',side_effect=reader):mail.sync(app)
-        self.assertGreaterEqual(len(calls),3)
+        self.assertEqual(len(calls),1)
+        with app.connect() as c:
+            checkpoint=mail.checkpoint(c,'test-account');self.assertNotIn('through',checkpoint);self.assertEqual(len(json.loads(checkpoint['scan_tasks'])),2)
+        with patch.object(mail,'read_mail',return_value=[]) as retry:mail.sync(app)
+        self.assertEqual(retry.call_count,2)
         with app.connect() as c:self.assertEqual(mail.checkpoint(c,'test-account')['history_before'],self.bounds_start)
     def test_http_preview_search_retry_missing_draft_and_notification_ack(self):
         import threading,urllib.request,urllib.parse

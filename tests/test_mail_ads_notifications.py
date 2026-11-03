@@ -104,7 +104,7 @@ class AdNotificationTests(unittest.TestCase):
         self.prefs(ad_mode='never',previews=False,sound=False);self.collect(self.message())
         with app.connect() as c:
             notifications.pending(c);data=mail.export(c)
-            c.execute('DELETE FROM email_events');mail.restore(c,data,{self.a:self.a,self.b:self.b})
+            c.execute('DELETE FROM email_events');c.execute('DELETE FROM emails');mail.restore(c,data,{self.a:self.a,self.b:self.b})
             self.assertEqual(c.execute('SELECT suppressed FROM email_events').fetchone()[0],1)
             self.assertFalse(notifications.preferences(c)['previews']);self.assertEqual(p.activity(c)['unread'],0)
     def test_existing_ads_are_reclassified_without_changing_links_or_human_approvals(self):

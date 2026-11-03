@@ -1,6 +1,6 @@
 {
   "name": "waypoint-job-manager",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "description": "Private desktop job application tracker with local AI résumé insights",
   "author": "Waypoint contributors",
   "license": "UNLICENSED",
@@ -39,6 +39,10 @@
       "desktop/mail-accounts.cjs"
     ],
     "extraResources": [
+      {
+        "from": "mail_scanner.py",
+        "to": "backend/mail_scanner.py"
+      },
       {
         "from": "mail_notifications.py",
         "to": "backend/mail_notifications.py"

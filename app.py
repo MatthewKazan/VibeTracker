@@ -508,9 +508,13 @@ class Handler(BaseHTTPRequestHandler):
       account=mail_tools.get_setting(c,'mail_account',None)
       if not account:raise ValueError('Choose your job-search email account first.')
       c.execute('DELETE FROM mail_checkpoints WHERE account_id=?',(account['id'],))
+      __import__('mail_scanner').init(c);c.execute('DELETE FROM mail_scan_seen WHERE account_id=?',(account['id'],))
       c.execute('DELETE FROM mail_provider_cursors WHERE account_id=?',(account['id'],))
       c.execute("UPDATE emails SET analysis_state='queued',analysis_error='' WHERE review='none' AND message_id IN (SELECT message_id FROM email_accounts WHERE account_id=?)",(account['id'],))
     return self.reply(mail_tools.start_sync(__import__(__name__)))
+   if route=='/api/emails/pause':
+    with connect() as c:c.execute("INSERT OR REPLACE INTO settings VALUES ('mail_enabled','false')")
+    return self.reply(mail_tools.pause_sync())
    if route=='/api/emails/sync':return self.reply(mail_tools.start_sync(__import__(__name__)))
    if route=='/api/emails/feedback/retry':
     with connect() as c:
@@ -531,6 +535,7 @@ class Handler(BaseHTTPRequestHandler):
      if j['enabled'] and not mail_tools.get_setting(c,'mail_account',None):raise ValueError('Choose your job-search email account first.')
      c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',('mail_enabled',json.dumps(j['enabled'])))
     if j['enabled']:mail_tools.start_sync(__import__(__name__))
+    else:mail_tools.pause_sync()
     return self.reply({'ok':True})
    if route=='/api/restore':
     cfg=j.get('settings',{})
@@ -701,6 +706,11 @@ class Handler(BaseHTTPRequestHandler):
    self.reply(result)
   except Exception as e: self.reply({'error':explain(e)},400)
 if __name__=='__main__':
+ import signal
+ def stop_backend(signum,frame):
+  mail_tools.pause_sync();raise SystemExit(0)
+ signal.signal(signal.SIGTERM,stop_backend)
+ signal.signal(signal.SIGINT,stop_backend)
  init(); backup(); threading.Thread(target=background_worker,daemon=True).start(); threading.Thread(target=mail_tools.worker,args=(__import__(__name__),),daemon=True).start(); port=int(os.environ.get('PORT',8765))
  server=ThreadingHTTPServer(('127.0.0.1',port),Handler)
  print(f'WAYPOINT_READY http://127.0.0.1:{server.server_port}',flush=True)
