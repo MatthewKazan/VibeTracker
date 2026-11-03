@@ -83,3 +83,54 @@ Autofill now reads page metadata, matching role objects in same-origin JavaScrip
 
 ## Version 1.2.1
 Q&A cards now have a single Copy answer action. Complete autofill fields skip unnecessary model calls, complete structured postings skip extra source fetching, and full posting text takes priority over short marketing metadata. Failed optional script fetches preserve available extraction results. The desktop backend client fully reads responses and handles interrupted connections without using Undici, addressing the reported parser assertion.
+
+## Email connections and email review
+
+Choose Emails → Collection & classification settings → Connect Gmail, Outlook or IMAP. For native Apple Mail on macOS, use Refresh accounts, select the job-search account and press Use this account. Collection reads only that account, including Spam, Junk, Sent and archived folders; folders named Trash, Deleted Messages and Drafts are excluded. Localized/custom folders may need corresponding exclusions. No email is moved, deleted or marked read. macOS may request Mail automation permission.
+
+Collection and classification are independent. The collector reads each candidate message body once, matches tracked-company names, legal-name variants, common spacing/camel-case variants, split brand names and known employer domains, and saves all matches immediately. Company correspondence remains viewable even if it is a newsletter or AI cannot classify it. Exact tracked role mentions narrow the application links; company-only messages link to all tracked roles at that company. Manual links are preserved.
+
+For the Apple Mail adapter, the initial history search starts with recent messages and works backward in resumable windows. Mail date metadata bounds the search; if unavailable, the fallback searches back to 1970. Timeouts split unfinished windows. Incremental checks rescan a two-day overlap and deduplicate on Message-ID. Each committed window saves its collection checkpoint independently of AI results. Adding/changing tracked companies triggers a history refresh. Check emails since last sync resumes collection; Rescan all company emails restarts matching. Collection and AI queues resume after app restart.
+
+AI only classifies saved email types: rejection, actual interview/test request, job offer, application confirmation, or other. It does not decide which emails to retain, select application links or add jobs. Types are committed individually. Normalized whitespace, HTML entities and typographic punctuation are allowed when validating model evidence. An unverifiable quote is removed and replaced with a visible warning; the original email and manual status suggestion remain available. Other model/shortcut failures stay on the individual email with Retry this email / Retry failed analyses, and never roll back collection or stop other queued messages.
+
+All email-driven status changes require approval. Applications show Review buttons beside their current saved status. Pending interview/test and offer suggestions sort ahead of approved Interview pending applications and ordinary sort levels. Clicking a review button opens its source email. An approval changes only the selected linked applications and records the email/date; disapproval leaves statuses unchanged and asks the shortcut to propose a prompt correction for separate approval. Ignore email removes an obsolete message from review without triggering error analysis; Show ignored and Restore ignored email retain access to its history.
+
+When every tracked role at a company has an approved current status (from email review or an explicitly saved terminal status: Rejected, Accepted, Withdrawn or Offer declined), earlier messages linked to that company are automatically marked Ignored · superseded. The conservative cutoff is the oldest effective email date across those approvals (or the recorded manual status-transition time), so messages that might postdate one role’s decision remain visible. Waiting and automatically inferred Ghosted statuses do not count as terminal approvals. Editing notes without changing a terminal status does not move its cutoff. Approved/dismissed emails and explicitly restored historical messages are preserved. A missing-role suggestion is not assumed to belong to unrelated existing jobs.
+
+The inbox displays total, matching, shown, awaiting-classification and pending-review counts. Group by Company & role, Email type, or No grouping; sort by received date (either direction), type, review status or company. Combine search, inclusive local date range, type, Needs review, Exclude confirmations and Show ignored filters. Lists load lightweight previews, full bodies load on selection, and Show 200 more exposes further matching records. Full-body search covers text beyond the preview.
+
+Specific role names in confirmation text are checked against tracked applications without AI. A possible missing role gets a persistent “<job> may be missing from list” hint. A background lookup tries public posting URLs and public web search using only company/title; a found posting must match the title and employer. Private applicant, assessment and interview links are excluded, and applicant tokens/tracking parameters are not forwarded. When a posting cannot be verified, the hint remains. Review & add application opens a prefilled editable draft; nothing is added until you save it. Duplicate receipts share the suggestion and source links.
+
+Native desktop notifications report newly collected emails, and potential status changes request urgent banners/sound and dock attention. Notifications are grouped and durably acknowledged after display; clicking opens the email review. Dock badge counts reflect unresolved reviews. macOS notification permissions and Focus settings govern OS delivery. In-app counts and review buttons remain available.
+
+Email contents and model inference stay local. Public posting lookup sends company/title search terms and requests public job pages. Email records, application links, missing-role suggestions, approved status provenance and feedback are included in SQLite snapshots and JSON exports; JSON restores remap job IDs and retain the review state. Notifications are not replayed from exports.
+
+### JobTracker Email Review shortcut
+
+The shortcut already created on this Mac takes Shortcut Input, passes it to stdin of one Run Shell Script action, and returns JSON:
+
+```sh
+'/Applications/JobTracker.app/Contents/Resources/python/bin/python3' -B '/Applications/JobTracker.app/Contents/Resources/backend/mail_shortcut.py'
+```
+
+It uses the installed local Ollama model selected in JobTracker. The default classifier is invoked directly using the running app’s bundled Python and helper; Apple Shortcuts is optional. The installed Siri Shortcut also points to the Applications bundle. Custom Shortcuts remain supported on macOS. The app invokes it with shortcuts run and JSON input/output files.
+
+Current classification input includes mode=classify, type_only=true, model, classifier_prompt, and the saved email. Output is a kind (rejection/interview/offer/confirmation/other) and evidence quote. Legacy callers with jobs or batch input remain supported. Feedback input uses mode=feedback, email, classifier_prompt, tracked job context and disapproval_reason; output includes explanation and proposed_prompt. A prompt correction is applied only after approval and only if its base prompt has not changed. mode=selftest checks shortcut wiring without inference.
+
+### 1.6 review hardening
+
+Application counters use inclusive local calendar windows: today, the last 7 days and the last 30 days, excluding future dates. They refresh at local midnight and on focus after sleep. Background email work preserves open application status selections, notes and unsaved status color/order drafts.
+
+Status approvals include a token tied to the displayed classification, body revision, application links and current affected job state. A stale request is refused and refreshed for review. In-flight analysis uses live link/decision state and cannot overwrite a newly downloaded email body. Later Mail downloads hydrate empty or incomplete records and requeue undecided emails; resolved decisions stay resolved. Old empty bodies receive a separate recovery scan.
+
+The inbox API pages 200 headers by default, performs search/filter/sort before paging, and batches related-record queries. Full content is fetched on selection. Supersession uses one header/link pass rather than loading all bodies per company. Full backups include notification delivery/read history and legacy restores reconstruct alerts. More than 200 notifications can be expanded in the UI. Account checks cover previews, approvals and pending application indicators.
+
+See [EMAIL_PORTABILITY.md](EMAIL_PORTABILITY.md) for the implemented cross-platform adapters, provider registration instructions, migration design and remaining limitations. Gmail, Outlook/Microsoft 365 and IMAP/TLS connect directly on macOS, Windows and Linux. The default local classifier no longer depends on Siri or the development checkout.
+
+
+### 1.7 direct email connections
+
+Connect Gmail, Outlook/Microsoft 365 or IMAP/TLS from Emails → Collection & classification settings. OAuth uses system-browser sign-in with PKCE; supply your registered Google Desktop or Microsoft Mobile/Desktop client ID. Other providers can use an IMAP app password. Remember encrypts credentials with system-backed desktop storage; exports contain no tokens or passwords. Linux requires an available secret store for persistent credentials, or an explicit session-only connection.
+
+All adapters feed the same durable collection, local classification, company/role linking, notification and manual approval workflow. Spam/Junk and ordinary Archive folders are included, while Trash/Drafts are excluded. API cursors and retained messages commit together; company changes trigger a deduplicated full pass, and empty bodies are retried during subsequent checks. Large/incomplete text is held without a status proposal. Apple Mail stays available on macOS through Refresh accounts. Direct provider setup and limitations are in [EMAIL_PORTABILITY.md](EMAIL_PORTABILITY.md).

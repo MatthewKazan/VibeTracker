@@ -1,7 +1,7 @@
 {
   "name": "waypoint-job-manager",
-  "version": "1.2.1",
-  "description": "Private desktop job application tracker with local AI r\u00e9sum\u00e9 insights",
+  "version": "1.7.0",
+  "description": "Private desktop job application tracker with local AI résumé insights",
   "author": "Waypoint contributors",
   "license": "UNLICENSED",
   "private": true,
@@ -32,10 +32,33 @@
     "files": [
       "desktop/main.cjs",
       "desktop/runtime.cjs",
+      "desktop/notifications.cjs",
       "build/icon.png",
-      "package.json"
+      "package.json",
+      "desktop/preload.cjs",
+      "desktop/mail-accounts.cjs"
     ],
     "extraResources": [
+      {
+        "from": "mail_sources.py",
+        "to": "backend/mail_sources.py"
+      },
+      {
+        "from": "mail_pipeline.py",
+        "to": "backend/mail_pipeline.py"
+      },
+      {
+        "from": "mail_shortcut.py",
+        "to": "backend/mail_shortcut.py"
+      },
+      {
+        "from": "mail_integration.py",
+        "to": "backend/mail_integration.py"
+      },
+      {
+        "from": "mail_reader.js",
+        "to": "backend/mail_reader.js"
+      },
       {
         "from": "app.py",
         "to": "backend/app.py"
@@ -68,7 +91,10 @@
       ],
       "category": "public.app-category.productivity",
       "icon": "build/icon.icns",
-      "identity": "-"
+      "identity": "-",
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "JobTracker reads Apple Mail to link application correspondence and propose rejections for your review."
+      }
     },
     "win": {
       "target": [

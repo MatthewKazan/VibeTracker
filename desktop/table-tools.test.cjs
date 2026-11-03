@@ -10,3 +10,18 @@ test('flow conserves counts and separates rejection stages',()=>{const c=t.flow(
 test('round edges count distinct applications and deduplicate saves',()=>{const r=t.transitions([{status:'Rejected',status_history:['Waiting','Interview 1','Interview 1','Interview 2','Interview 3','Rejected']},{status:'Interview 2',status_history:['Waiting','Interview 1','Interview 2']}]);const edge=(a,b)=>r.edges.find(e=>e.from===a&&e.to===b);assert.equal(edge('Applied','Interview 1').count,2);assert.equal(edge('Interview 2','Interview 3').count,1);assert.equal(edge('Interview 3','Rejected').count,1);assert.equal(edge('Interview 3','Rejected').inferred,0);assert.equal(r.current.Rejected,1);});
 test('missing rounds are marked inferred and offers do not invent interviews',()=>{const r=t.transitions([{status:'Rejected',interviews_completed:3},{status:'Accepted'}]);assert.equal(r.edges.find(e=>e.from==='Interview 3'&&e.to==='Rejected').inferred,1);assert.equal(r.edges.find(e=>e.from==='Applied'&&e.to==='Offer').inferred,1);assert.equal(r.edges.find(e=>e.from==='Applied'&&e.to==='Interview 1').count,1);});
 test('application date sorting uses recorded instants before company ties',()=>{const rows=[{id:1,date_applied:'2026-10-30',applied_at:'2026-10-30T10:00:00-04:00',company:'A'},{id:2,date_applied:'2026-10-30',applied_at:'2026-10-30T11:00:00-04:00',company:'Z'}];assert.deepEqual(rows.sort((a,b)=>t.compare(a,b,[{field:'date_applied',direction:-1},{field:'company',direction:1}])).map(j=>j.id),[2,1]);});
+
+test('interview pending always sorts to the top regardless of saved sorting',()=>{
+ const jobs=[{id:1,status:'Waiting',company:'AAA',date_applied:'2026-11-02'},{id:2,status:'Interview pending',company:'ZZZ',date_applied:'2020-01-01'}];
+ for(const rules of [[{field:'date_applied',direction:-1}],[{field:'company',direction:1}],[{field:'status',direction:-1}],[]]){
+  assert.equal([...jobs].sort((a,b)=>t.compare(a,b,rules,['Waiting','Interview pending']))[0].id,2);
+ }
+});
+test('positive changes awaiting approval outrank approved interviews and every normal sort',()=>{
+ const jobs=[{id:1,status:'Interview pending',company:'A'},{id:2,status:'Waiting',company:'Z',pending_positive:true},{id:3,status:'Waiting',company:'B',pending_positive:false}];
+ for(const rules of [[{field:'company',direction:1}],[{field:'status',direction:-1}],[]])assert.deepEqual([...jobs].sort((a,b)=>t.compare(a,b,rules)).map(j=>j.id),[2,1,3]);
+});
+test('multiple pending emails produce one compact review summary with positive changes first',()=>{
+ const summary=t.pendingReview({pending_changes:[{message_id:'negative',category:'rejection',proposed_status:'Rejected',subject:'Update'},{message_id:'positive',category:'interview',proposed_status:'Interview pending',subject:'Interview'}]});
+ assert.equal(summary.count,2);assert.equal(summary.message_id,'positive');assert.equal(summary.positive,true);assert(summary.title.includes('Rejected'));assert.equal(t.pendingReview({}),null);
+});

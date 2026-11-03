@@ -1,19 +1,22 @@
-const {app,BrowserWindow,dialog,Menu,shell,session,screen}=require('electron');
+const {app,BrowserWindow,dialog,Menu,shell,session,screen,Notification,ipcMain,safeStorage}=require('electron');
 const {spawn}=require('node:child_process');
+const {startNotifications}=require('./notifications.cjs');
+const {startMailAccounts}=require('./mail-accounts.cjs');
 const fs=require('node:fs');
 const path=require('node:path');
 const crypto=require('node:crypto');
 const {pythonExecutable,safeExternal,backendEnvironment,wipeTarget,localRequest}=require('./runtime.cjs');
 // Smoke mode (CI launch test) uses a throwaway profile so it never touches real data or collides with a running copy.
 const smoke=process.env.WAYPOINT_SMOKE==='1';
-app.setPath('userData',smoke?path.join(require('node:os').tmpdir(),'jobtracker-smoke-'+process.pid,'Waypoint'):path.join(app.getPath('appData'),'Waypoint'));
+app.setPath('userData',(smoke||process.env.WAYPOINT_UI_TEST==='1')?path.join(require('node:os').tmpdir(),'jobtracker-smoke-'+process.pid,'Waypoint'):path.join(app.getPath('appData'),'Waypoint'));
 // GUI apps have no visible console on Windows, so smoke results go to a file.
 function smokeResult(text){if(process.env.WAYPOINT_SMOKE_RESULT)fs.writeFileSync(process.env.WAYPOINT_SMOKE_RESULT,text);}
+let notificationStop,mailAccountsStop,mainSecret;
 let server,win,origin,quitting=false,quitPending=false,wipeOnQuit=false,secret,logStream;
 const gotLock=app.requestSingleInstanceLock();
 if(!gotLock){app.quit();}else{
 app.on('second-instance',()=>{if(win){if(win.isMinimized())win.restore();win.show();win.focus();}});
-app.whenReady().then(start).catch(e=>{if(smoke){smokeResult('fail: '+e.message);if(server)server.kill();app.exit(1);return;}dialog.showErrorBox('JobTracker could not start',e.message+'\nYour saved data has not been removed.');app.quit();});
+app.whenReady().then(start).catch(e=>{if(smoke){quitting=true;smokeResult('fail: '+e.message);if(server)server.kill();app.exit(1);return;}dialog.showErrorBox('JobTracker could not start',e.message+'\nYour saved data has not been removed.');app.quit();});
 }
 async function start(){
  const root=app.isPackaged?process.resourcesPath:path.resolve(__dirname,'..');
@@ -21,8 +24,8 @@ async function start(){
  const runtime=app.isPackaged?path.join(root,'python'):path.join(root,'build/runtime');
  const data=path.join(app.getPath('userData'),'data');fs.mkdirSync(data,{recursive:true});
  logStream=fs.createWriteStream(path.join(data,'desktop.log'),{flags:'a'});
- secret=crypto.randomBytes(32).toString('hex');
- server=spawn(pythonExecutable(runtime),['-u','-B',path.join(backend,'app.py')],{cwd:backend,env:backendEnvironment(data,secret),stdio:['ignore','pipe','pipe'],windowsHide:true});
+ secret=crypto.randomBytes(32).toString('hex');mainSecret=crypto.randomBytes(32).toString('hex');
+ server=spawn(pythonExecutable(runtime),['-u','-B',path.join(backend,'app.py')],{cwd:backend,env:{...backendEnvironment(data,secret),JOB_MANAGER_MAIN_TOKEN:mainSecret},stdio:['ignore','pipe','pipe'],windowsHide:true});
  server.stderr.on('data',d=>logStream.write(d));
  origin=await new Promise((resolve,reject)=>{
   let output='';const timer=setTimeout(()=>reject(Error('The local data engine did not start. Check '+path.join(data,'desktop.log'))),30000);
@@ -36,7 +39,7 @@ async function start(){
  session.defaultSession.webRequest.onBeforeSendHeaders({urls:[origin+'/*']},(details,callback)=>callback({requestHeaders:{...details.requestHeaders,'X-Waypoint-Session':secret}}));
  const bounds=savedBounds();
  const area=screen.getPrimaryDisplay().workArea,width=Math.min(1628,area.width),height=Math.min(869,area.height);
- win=new BrowserWindow({x:area.x+Math.round((area.width-width)/2),y:area.y+Math.round((area.height-height)/2),width,height,minWidth:640,minHeight:480,backgroundColor:'#171717',title:'JobTracker',icon:path.join(__dirname,'../build/icon.png'),show:false,webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
+ win=new BrowserWindow({x:area.x+Math.round((area.width-width)/2),y:area.y+Math.round((area.height-height)/2),width,height,minWidth:640,minHeight:480,backgroundColor:'#171717',title:'JobTracker',icon:path.join(__dirname,'../build/icon.png'),show:false,webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true}});
  win.webContents.setWindowOpenHandler(({url})=>{if(safeExternal(url))shell.openExternal(url);return {action:'deny'};});
  win.webContents.on('will-navigate',(event,url)=>{if(new URL(url).origin!==origin){event.preventDefault();if(safeExternal(url))shell.openExternal(url);}});
  win.webContents.on('will-attach-webview',e=>e.preventDefault());
@@ -49,11 +52,13 @@ async function start(){
  let saveTimer;const writeBounds=()=>{clearTimeout(saveTimer);try{fs.writeFileSync(windowStateFile(),JSON.stringify({...win.getNormalBounds(),maximized:win.isMaximized()}));}catch{}};
  for(const e of ['resize','move','maximize','unmaximize'])win.on(e,()=>{clearTimeout(saveTimer);saveTimer=setTimeout(writeBounds,400);});
  win.on('close',writeBounds);
+ if(!smoke)mailAccountsStop=startMailAccounts({ipcMain,safeStorage,userData:app.getPath('userData'),win,origin,request:(route,body)=>backendRequest(route,body,true),openExternal:url=>shell.openExternal(url)});
  await win.loadURL(origin);win.show();
+ if(!smoke)notificationStop=startNotifications({Notification,request:backendRequest,app,win,openEmail:id=>win.webContents.executeJavaScript('window.openEmailReview?.('+JSON.stringify(id)+')').catch(()=>{})});
  if(smoke){
   // Pass only if the backend answered and the interface actually rendered the application list.
-  const rendered=await win.webContents.executeJavaScript("new Promise(r=>setTimeout(()=>r(!!document.querySelector('#navcount')&&document.querySelector('#rows')!==null),3000))");
-  if(!rendered)throw Error('The interface did not render.');
+  const rendered=await win.webContents.executeJavaScript("new Promise(resolve=>{const start=Date.now();function check(){const result={ready:!!document.querySelector('#navcount')&&document.querySelector('#rows')!==null&&typeof window.openEmailReview==='function'&&typeof state!=='undefined'&&!!state.token,review:typeof window.openEmailReview,stateReady:typeof state!=='undefined'&&!!state.token,error:document.querySelector('#errorText')?.textContent||''};if(result.ready||Date.now()-start>15000)resolve(result);else setTimeout(check,250)}check()})");
+  if(!rendered.ready)throw Error('The interface did not render: '+JSON.stringify(rendered));
   smokeResult('ok '+app.getVersion());setTimeout(()=>app.quit(),1000);
  }
 }
@@ -80,14 +85,15 @@ app.on('quit',()=>{
  // Chromium can recreate cache files while shutting down (and Windows may still hold the log open), so finish from a detached process.
  spawn(process.execPath,['-e',`setTimeout(()=>require('fs').rmSync(${JSON.stringify(dir)},{recursive:true,force:true}),2000)`],{detached:true,stdio:'ignore',env:{...process.env,ELECTRON_RUN_AS_NODE:'1'}}).unref();
 });
-async function backendRequest(route,body){
- const headers={'X-Waypoint-Session':secret};
+async function backendRequest(route,body,mainOnly=false){
+ const headers={'X-Waypoint-Session':secret};if(mainOnly)headers['X-Waypoint-Main']=mainSecret;
  if(body){const state=await backendRequest('state');headers['X-Token']=state.token;headers['Content-Type']='application/json';}
  const r=await localRequest(origin+'/api/'+route,{method:body?'POST':'GET',headers,body:body?JSON.stringify(body):undefined,timeout:35000});
  const result=await r.json();if(!r.ok)throw Error(result.error||'The local engine did not respond.');return result;
 }
 app.on('before-quit',event=>{
- if(quitting){if(server&&!server.killed)server.kill();if(logStream)logStream.end();return;}
+ if(smoke){quitting=true;if(server)server.kill?.();app.exit(0);return;}
+ if(quitting){if(mailAccountsStop)mailAccountsStop();if(notificationStop)notificationStop();if(server&&!server.killed)server.kill();if(logStream)logStream.end();return;}
  event.preventDefault();if(quitPending)return;quitPending=true;
  (async()=>{
   try{

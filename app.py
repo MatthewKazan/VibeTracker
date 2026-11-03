@@ -4,6 +4,8 @@ from html.parser import HTMLParser
 from errors import explain
 import intelligence as ai
 import locations as location_tools
+import mail_integration as mail_tools
+import mail_pipeline
 import hashlib
 import calendar, contextlib, time
 import csv, datetime as dt, html, io, json, os, re, secrets, shutil, socket, sqlite3, threading, urllib.request, urllib.parse, ipaddress, zipfile
@@ -13,6 +15,7 @@ from xml.etree import ElementTree as ET
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('JOB_MANAGER_DATA', ROOT/'data')); DATA.mkdir(parents=True,exist_ok=True)
 DESKTOP_TOKEN=os.environ.get('JOB_MANAGER_TOKEN')
+MAIN_TOKEN=os.environ.get('JOB_MANAGER_MAIN_TOKEN')
 DB=DATA/'jobs.sqlite3'; LOCK=threading.RLock(); TOKEN=secrets.token_urlsafe(32)
 FIELDS=['title','company','date_applied','location','status','fit','notes','url','description','latitude','longitude','follow_up','interviews_completed','applied_at']
 def connect():
@@ -25,6 +28,7 @@ def init():
   c.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY,value TEXT)')
   c.execute('CREATE TABLE IF NOT EXISTS fit_reports (job_id INTEGER PRIMARY KEY, fingerprint TEXT, report TEXT)')
   c.execute('CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY,job_id INTEGER,at TEXT,status TEXT)')
+  mail_tools.init(c)
 def backup():
  folder=DATA/'backups'; folder.mkdir(exist_ok=True)
  path=folder/(dt.datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'.sqlite3')
@@ -35,10 +39,12 @@ def backup():
 def settings():
  with connect() as c: return {r['key']:json.loads(r['value']) for r in c.execute('SELECT * FROM settings')}
 def save_job(c,j,ident=None):
+ previous_status=None
  now=dt.datetime.now().astimezone().isoformat(timespec='microseconds')
  if ident:
   old=c.execute('SELECT * FROM jobs WHERE id=?',(ident,)).fetchone()
   if not old: raise ValueError('Job no longer exists')
+  previous_status=old['status']
   row=dict(old); row.update({k:v for k,v in j.items() if k in FIELDS})
   if 'location' in j and j['location'] != old['location']: row['latitude']=None; row['longitude']=None
  else:
@@ -61,7 +67,13 @@ def save_job(c,j,ident=None):
  else:
   ident=c.execute('INSERT INTO jobs ('+','.join(FIELDS)+',created_at,updated_at) VALUES ('+','.join('?' for _ in range(len(FIELDS)+2))+')',[row[k] for k in FIELDS]+[now,now]).lastrowid
  if not ident or not j.get('status'): pass
- c.execute('INSERT INTO history(job_id,at,status) VALUES (?,?,?)',(ident,now,row['status']))
+ history_at=now
+ if j.get('_restoring'):
+  try:history_at=mail_pipeline.timestamp(j.get('_restored_at') or '1970-01-01T00:00:00+00:00').isoformat()
+  except (ValueError,TypeError,AttributeError):history_at='1970-01-01T00:00:00+00:00'
+ c.execute('INSERT INTO history(job_id,at,status) VALUES (?,?,?)',(ident,history_at,row['status']))
+ if j.get('status') and not j.get('_email_approval') and not j.get('_restoring'):mail_pipeline.record_manual_approval(c,ident,row['status'],now,previous_status!=row['status'])
+ if any(k in j for k in ('title','company','url')):mail_pipeline.on_job_saved(c)
  return ident
 
 def fetch(url):
@@ -276,6 +288,7 @@ def current_jobs():
    job['interviews_completed']=max([job.get('interviews_completed') or 0]+[int(m.group(1)) for st in stages if (m:=re.fullmatch(r'Interview (\d+)',st or '',re.I))])
    cached=c.execute('SELECT report FROM fit_reports WHERE job_id=? AND fingerprint=?',(job['id'],fit_fingerprint(job.get('description') or '',config))).fetchone()
    job['fit']=json.loads(cached['report']).get('score') if cached else None
+ with connect() as c:mail_pipeline.pending_for_jobs(c,jobs)
  return jobs
 
 # Background analysis runs one job at a time, in the user's sort order, and only while a model is
@@ -348,6 +361,30 @@ class Handler(BaseHTTPRequestHandler):
   if DESKTOP_TOKEN and self.headers.get('X-Waypoint-Session')!=DESKTOP_TOKEN:return self.reply({'error':'Unauthorized'},403)
   if self.headers.get('Host','').split(':')[0] not in ('127.0.0.1','localhost'): return self.reply({'error':'Invalid host'},403)
   path=urllib.parse.urlparse(self.path).path
+  if path=='/api/mail/source/updates':
+   if not MAIN_TOKEN or self.headers.get('X-Waypoint-Main')!=MAIN_TOKEN:return self.reply({'error':'Main-process access required.'},403)
+   import mail_sources
+   with mail_sources.CREDENTIAL_LOCK:return self.reply({'updates':dict(mail_sources.UPDATES)})
+  if path=='/api/emails/summary':
+   with connect() as c:return self.reply(mail_pipeline.summary(c))
+  if path=='/api/emails/notifications':
+   with connect() as c:return self.reply({'events':mail_pipeline.notifications(c)})
+  if path=='/api/emails/activity':
+   try:
+    limit=urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get('limit',['200'])[0]
+    with connect() as c:return self.reply(mail_pipeline.activity(c,limit))
+   except (ValueError,TypeError):return self.reply({'error':'Invalid notification page size.'},400)
+  if path=='/api/emails/message':
+   ident=urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get('message_id',[''])[0]
+   with connect() as c:
+    try:return self.reply(mail_tools.message_detail(c,ident))
+    except ValueError as e:return self.reply({'error':str(e)},404)
+  if path=='/api/emails':
+   options={k:v[0] for k,v in urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).items()}
+   options.setdefault('limit','200')
+   try:
+    with connect() as c:return self.reply(mail_tools.inbox(c,include_body=False,query=options.pop('query',''),options=options))
+   except (ValueError,TypeError) as e:return self.reply({'error':str(e)},400)
   if path=='/api/ollama': return self.reply(ai.discover())
   if path=='/api/state':
    jobs=current_jobs()
@@ -369,10 +406,10 @@ class Handler(BaseHTTPRequestHandler):
    if not p.is_file(): return self.reply({'error':'Snapshot missing'},404)
    with sqlite3.connect(p) as c:
     c.row_factory=sqlite3.Row
-    return self.reply({'version':1,'jobs':[dict(r) for r in c.execute('SELECT * FROM jobs')],'settings':{r['key']:json.loads(r['value']) for r in c.execute('SELECT * FROM settings')}})
+    return self.reply({'version':2,'jobs':[dict(r) for r in c.execute('SELECT * FROM jobs')],'settings':{r['key']:json.loads(r['value']) for r in c.execute('SELECT * FROM settings')},'emails':mail_tools.export(c)})
   if path=='/api/export':
    jobs=current_jobs()
-   return self.reply({'version':1,'jobs':jobs,'settings':settings()})
+   with connect() as c:return self.reply({'version':2,'jobs':jobs,'settings':settings(),'emails':mail_tools.export(c)})
   if path=='/api/csv':
    jobs=current_jobs()
    s=io.StringIO(); w=csv.DictWriter(s,fieldnames=FIELDS,extrasaction='ignore'); w.writeheader()
@@ -391,6 +428,94 @@ class Handler(BaseHTTPRequestHandler):
    j=json.loads(self.rfile.read(n)); route=self.path
    if not isinstance(j,dict):raise ValueError('Invalid request. Refresh the app and try again.')
    if route in ('/api/import','/api/restore') and (not isinstance(j.get('jobs'),list) or not all(isinstance(r,dict) for r in j['jobs'])):raise ValueError('This backup does not contain a valid jobs list. Choose a JobTracker JSON export.')
+   if route.startswith('/api/mail/source/'):
+    if not MAIN_TOKEN or self.headers.get('X-Waypoint-Main')!=MAIN_TOKEN:return self.reply({'error':'Main-process access required.'},403)
+    import mail_sources
+    if route=='/api/mail/source/install':
+     account=mail_sources.install(__import__(__name__),j.get('config'),j.get('activate') is True)
+     with mail_sources.CREDENTIAL_LOCK:return self.reply({'account':account,'credentials':dict(mail_sources.CREDENTIALS[account['id']])})
+    if route=='/api/mail/source/disconnect':mail_sources.disconnect(__import__(__name__),j.get('account_id'));return self.reply({'ok':True})
+    if route=='/api/mail/source/ack':
+     with mail_sources.CREDENTIAL_LOCK:
+      pending=mail_sources.UPDATES.get(j.get('account_id'),{})
+      if pending.get('revision')==j.get('revision'):mail_sources.UPDATES.pop(j.get('account_id'),None)
+     return self.reply({'ok':True})
+    raise ValueError('Unknown mail connection action.')
+   if route=='/api/emails/notifications/ack':
+    ids=j.get('ids',[])
+    if not isinstance(ids,list) or any(type(i) is not int for i in ids):raise ValueError('Invalid notification IDs.')
+    with connect() as c:c.executemany('UPDATE email_events SET delivered=1 WHERE id=?',[(i,) for i in ids])
+    return self.reply({'ok':True})
+   if route=='/api/emails/activity/seen':
+    with connect() as c:mail_pipeline.mark_activity_seen(c,j.get('through'),j.get('message_id'))
+    return self.reply({'ok':True})
+   if route=='/api/emails/retry':
+    with connect() as c:
+     account=mail_tools.get_setting(c,'mail_account')
+     if not account:raise ValueError('Choose your job-search account first.')
+     if j.get('message_id'):c.execute("UPDATE emails SET analysis_state='queued',analysis_error='' WHERE message_id=? AND analysis_state IN ('failed','warning') AND message_id NOT IN (SELECT message_id FROM email_source_refs WHERE body_complete=0) AND message_id IN (SELECT message_id FROM email_accounts WHERE account_id=?)",(j['message_id'],account['id']))
+     else:c.execute("UPDATE emails SET analysis_state='queued',analysis_error='' WHERE analysis_state='failed' AND message_id IN (SELECT message_id FROM email_accounts WHERE account_id=?)",(account['id'],))
+     mail_pipeline.touch(c)
+    return self.reply({'ok':True})
+   if route=='/api/emails/missing/search':
+    with connect() as c:
+     c.execute("UPDATE email_missing SET lookup_state='queued',error='' WHERE id=?",(j.get('id'),));mail_pipeline.touch(c)
+    return self.reply({'ok':True})
+   if route=='/api/emails/missing/dismiss':
+    with connect() as c:
+     c.execute("UPDATE email_missing SET state='dismissed' WHERE id=?",(j.get('id'),));mail_pipeline.auto_ignore(c);mail_pipeline.touch(c)
+    return self.reply({'ok':True})
+   if route=='/api/emails/open':
+    import subprocess,sys
+    with connect() as c:message=mail_tools.message_detail(c,j.get('message_id'))
+    if message.get('source_url'):return self.reply({'url':message['source_url']})
+    if sys.platform!='darwin':raise ValueError('This account has no webmail link. Open your mail app and search for this email subject or Message-ID.')
+    ident=message.get('internet_id') or message['message_id']
+    if ident.startswith('source:'):raise ValueError('This email has no Message-ID link. Search for its subject in your mail app.')
+    url='message://%3C'+urllib.parse.quote(ident.strip('<>'),safe='')+'%3E'
+    subprocess.run(['/usr/bin/open',url],check=True,timeout=10)
+    return self.reply({'ok':True})
+   if route=='/api/emails/accounts':
+    import sys,mail_sources
+    with connect() as c:connected=mail_sources.accounts(c)
+    native=[];warning=''
+    if sys.platform=='darwin' and j.get('include_apple') is True:
+     try:native=mail_tools.list_accounts()
+     except (ValueError,subprocess.TimeoutExpired) as exc:warning=str(exc)
+    return self.reply({'accounts':list({a['id']:a for a in connected+native}.values()),'warning':warning})
+   if route=='/api/emails/account':return self.reply(mail_tools.select_account(__import__(__name__),j.get('account_id')))
+   if route=='/api/emails/rescan':
+    if mail_tools.SYNC['running']:raise ValueError('Wait for the current Mail sync to finish.')
+    with LOCK:
+     backup()
+     with connect() as c:
+      account=mail_tools.get_setting(c,'mail_account',None)
+      if not account:raise ValueError('Choose your job-search email account first.')
+      c.execute('DELETE FROM mail_checkpoints WHERE account_id=?',(account['id'],))
+      c.execute('DELETE FROM mail_provider_cursors WHERE account_id=?',(account['id'],))
+      c.execute("UPDATE emails SET analysis_state='queued',analysis_error='' WHERE review='none' AND message_id IN (SELECT message_id FROM email_accounts WHERE account_id=?)",(account['id'],))
+    return self.reply(mail_tools.start_sync(__import__(__name__)))
+   if route=='/api/emails/sync':return self.reply(mail_tools.start_sync(__import__(__name__)))
+   if route=='/api/emails/feedback/retry':
+    with connect() as c:
+     if not c.execute('SELECT 1 FROM email_feedback WHERE message_id=?',(j.get('message_id'),)).fetchone():raise ValueError('No disapproval to analyze.')
+     c.execute("UPDATE email_feedback SET base_prompt=?,state='queued' WHERE message_id=?",(mail_tools.get_prompt(c),j['message_id']))
+    mail_tools.start_feedback(__import__(__name__),j['message_id']);return self.reply({'ok':True})
+   if route=='/api/emails/prompt':
+    prompt=j.get('prompt');shortcut=j.get('shortcut');use=j.get('use_shortcut')
+    if not isinstance(prompt,str) or not prompt.strip() or len(prompt)>16000 or not isinstance(shortcut,str) or not shortcut.strip() or len(shortcut)>200 or type(use) is not bool:raise ValueError('Enter a prompt and shortcut name, and choose whether to use it.')
+    with LOCK:
+     backup()
+     with connect() as c:
+      for key,value in [('mail_prompt',prompt),('mail_shortcut',shortcut),('mail_use_shortcut',use)]:c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(key,json.dumps(value)))
+    return self.reply({'ok':True})
+   if route=='/api/emails/settings':
+    if type(j.get('enabled')) is not bool:raise ValueError('Mail sync must be on or off.')
+    with connect() as c:
+     if j['enabled'] and not mail_tools.get_setting(c,'mail_account',None):raise ValueError('Choose your job-search email account first.')
+     c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',('mail_enabled',json.dumps(j['enabled'])))
+    if j['enabled']:mail_tools.start_sync(__import__(__name__))
+    return self.reply({'ok':True})
    if route=='/api/restore':
     cfg=j.get('settings',{})
     if not isinstance(cfg,dict) or any(k in cfg and not isinstance(cfg[k],str) for k in ('resume','model')):raise ValueError('Backup profile settings are invalid. Choose an unmodified JobTracker export.')
@@ -508,8 +633,26 @@ class Handler(BaseHTTPRequestHandler):
    with LOCK:
     backup()
     with connect() as c:
-     if route=='/api/job':
+     if route=='/api/emails/review':
+      if j.get('action') in ('approve','dismiss') and not isinstance(j.get('expected_token'),str):raise ValueError('Reload this email before approving its current proposal.')
+      mail_tools.review(c,j.get('message_id'),j.get('action'),j.get('job_ids',[]),save_job,j.get('expected_token'));result={'ok':True}
+      if j.get('action')=='dismiss':
+       reason=j.get('reason','')
+       if not isinstance(reason,str) or len(reason)>4000:raise ValueError('Feedback must be text up to 4,000 characters.')
+       c.execute("INSERT OR REPLACE INTO email_feedback (message_id,reason,base_prompt,state) VALUES (?,?,?,'queued')",(j['message_id'],reason or 'The user disapproved this status proposal.',mail_tools.get_prompt(c)))
+     elif route=='/api/emails/feedback/apply':
+      mail_tools.apply_feedback(c,j.get('message_id'));result={'ok':True}
+     elif route=='/api/job':
       result={'id':save_job(c,j,j.get('id'))}
+      if j.get('mail_suggestion'):
+       suggestion=c.execute('SELECT * FROM email_missing WHERE id=?',(j['mail_suggestion'],)).fetchone()
+       if not suggestion:raise ValueError('Email suggestion no longer exists.')
+       c.execute("UPDATE email_missing SET state='added',job_id=? WHERE id=?",(result['id'],j['mail_suggestion']))
+       sources=[r[0] for r in c.execute('SELECT message_id FROM email_missing_messages WHERE suggestion_id=?',(suggestion['id'],))] or [suggestion['message_id']]
+       for source in sources:
+        c.execute('INSERT OR IGNORE INTO email_jobs VALUES (?,?)',(source,result['id']))
+        c.execute("UPDATE emails SET match_kind='manual' WHERE message_id=? AND match_kind='missing'",(source,))
+       mail_pipeline.touch(c)
       if j.get('status')=='Waiting':exempt_from_ghosting(c,result['id'])
      elif route=='/api/delete': c.execute('DELETE FROM jobs WHERE id=?',(j['id'],)); result={'ok':True}
      elif route=='/api/settings':
@@ -521,21 +664,27 @@ class Handler(BaseHTTPRequestHandler):
       for row_number,row in enumerate(j['jobs'],start=2):
        if row.get('url') and c.execute('SELECT 1 FROM jobs WHERE url=?',(row['url'],)).fetchone(): skipped+=1; continue
        if c.execute('SELECT 1 FROM jobs WHERE title=? AND company=? AND date_applied=?',(row.get('title'),row.get('company'),row.get('date_applied'))).fetchone(): skipped+=1; continue
-       try:save_job(c,row)
+       try:save_job(c,{**row,'_restoring':True,'_restored_at':row.get('updated_at')} if route=='/api/restore' else row)
        except Exception as e:raise ValueError(f'Import row {row_number}: {explain(e)} No rows were imported.') from e
        count+=1
       if route=='/api/restore':
+       job_map={}
+       for row in j['jobs']:
+        match=c.execute("SELECT id FROM jobs WHERE (url=? AND url!='') OR (title=? AND company=? AND date_applied=?)",(row.get('url'),row.get('title'),row.get('company'),row.get('date_applied'))).fetchone()
+        if match and row.get('id') is not None:job_map[row['id']]=match[0]
+       if 'emails' in j:mail_tools.restore(c,j['emails'],job_map)
        for k,v in j.get('settings',{}).items():
-        if k in ('resume','model','auto_start','profile_memory','quit_model_policy','sort_rules','status_order','status_colors','analysis_system','analysis_instructions','auto_analyze','sidebar_collapsed','questions','question_groups') or k.startswith('discussion_'): c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(k,json.dumps(v)))
+        if k in ('mail_prompt','mail_shortcut','mail_use_shortcut','resume','model','auto_start','profile_memory','quit_model_policy','sort_rules','status_order','status_colors','analysis_system','analysis_instructions','auto_analyze','sidebar_collapsed','questions','question_groups') or k.startswith('discussion_'): c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(k,json.dumps(v)))
       result={'count':count,'skipped':skipped}
      elif route=='/api/backup': result={'ok':True}
      else: raise ValueError('Unknown action')
     try:backup()
     except Exception as e:result['warning']='Saved successfully, but the recovery snapshot failed. '+explain(e)
+   if route=='/api/emails/review' and j.get('action')=='dismiss':mail_tools.start_feedback(__import__(__name__),j['message_id'])
    self.reply(result)
   except Exception as e: self.reply({'error':explain(e)},400)
 if __name__=='__main__':
- init(); backup(); threading.Thread(target=background_worker,daemon=True).start(); port=int(os.environ.get('PORT',8765))
+ init(); backup(); threading.Thread(target=background_worker,daemon=True).start(); threading.Thread(target=mail_tools.worker,args=(__import__(__name__),),daemon=True).start(); port=int(os.environ.get('PORT',8765))
  server=ThreadingHTTPServer(('127.0.0.1',port),Handler)
  print(f'WAYPOINT_READY http://127.0.0.1:{server.server_port}',flush=True)
  try:server.serve_forever()
