@@ -41,7 +41,7 @@ async function oauth(config,{openExternal,fetcher=fetch,signal,timeout=300000}){
  return {provider:config.provider,client_id:config.client_id,...(config.provider==='gmail'&&config.client_secret?{client_secret:config.client_secret}:{}),access_token:data.access_token,refresh_token:data.refresh_token,expires_at:Date.now()/1000+Number(data.expires_in||3600)};
 }
 function startMailAccounts({ipcMain,safeStorage,userData,win,origin,request,openExternal,interval=15000}){
- const vault=new Vault(path.join(userData,'mail-credentials.enc.json'),safeStorage);let stopped=false,busy=false,auth,warning=vault.error,updatesBusy=false;
+ const vault=new Vault(path.join(userData,'mail-credentials.enc.json'),safeStorage);let stopped=false,busy=false,auth,warning=vault.error,updatesBusy=false;const restores=new Map();
  const authorized=event=>{if(event.sender!==win.webContents||new URL(event.senderFrame?.url||'about:blank').origin!==origin)throw Error('Mail connection requests must come from JobTracker.');};
  const handles=[];const handle=(name,callback)=>{handles.push(name);ipcMain.handle(name,async(event,...args)=>{authorized(event);try{return await callback(...args)}catch(e){throw Error(e.message||'Mail connection failed.')}})};
  handle('mail:status',()=>({secureStorage:vault.available(),warning,busy}));
@@ -57,9 +57,9 @@ function startMailAccounts({ipcMain,safeStorage,userData,win,origin,request,open
   }finally{busy=false;auth=null}
  });
  handle('mail:cancel',()=>{auth?.abort();return {ok:true}});
- handle('mail:disconnect',async id=>{if(vault.error)throw Error('Unlock your system credential store before forgetting a saved account.');if(typeof id!=='string')throw Error('Choose an account.');await request('mail/source/disconnect',{account_id:id});if(vault.records[id])vault.remove(id);return {ok:true}});
+ handle('mail:disconnect',async id=>{if(vault.error)throw Error('Unlock your system credential store before forgetting a saved account.');if(typeof id!=='string')throw Error('Choose an account.');await restores.get(id);await request('mail/source/disconnect',{account_id:id});if(vault.records[id])vault.remove(id);return {ok:true}});
  // Restore asynchronously so an offline provider never delays app startup.
- (async()=>{for(const [id,config] of Object.entries(vault.records)){if(stopped)break;try{await request('mail/source/install',{config,activate:false})}catch{warning='A saved mail account could not reconnect. Open email settings to reconnect when online.';}}})().catch(()=>{});
+ (async()=>{for(const [id,config] of Object.entries(vault.records)){if(stopped)break;if(!vault.records[id])continue;let finished;const pending=new Promise(resolve=>finished=resolve);restores.set(id,pending);try{await request('mail/source/install',{config,activate:false})}catch{warning='A saved mail account could not reconnect. Open email settings to reconnect when online.';}finally{restores.delete(id);finished()}}})().catch(()=>{});
  const timer=setInterval(async()=>{if(stopped||updatesBusy)return;updatesBusy=true;try{const {updates}=await request('mail/source/updates');for(const [id,item] of Object.entries(updates)){if(vault.records[id])vault.put(id,item.config);await request('mail/source/ack',{account_id:id,revision:item.revision})}}catch{warning='Refreshed credentials could not be saved. Reconnect this account if access expires.';}finally{updatesBusy=false}},interval);timer.unref?.();
  return ()=>{stopped=true;auth?.abort();clearInterval(timer);for(const name of handles)ipcMain.removeHandler(name)};
 }

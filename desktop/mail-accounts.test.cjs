@@ -24,3 +24,9 @@ test('preload exposes only mail methods and renders plain connection errors',asy
  assert.deepEqual(Object.keys(bridge),['status','connect','cancel','disconnect']);
  await assert.rejects(bridge.connect({}),/^Error: Enter a client ID\.$/);
 });
+test('disconnect waits for an in-flight startup restore before forgetting credentials',async t=>{
+ const dir=tmp(t);new Vault(path.join(dir,'mail-credentials.enc.json'),safe).put('imap:test',{provider:'imap',email:'jobs@test',password:'private'});
+ const handlers={},webContents={},calls=[];let complete;const pending=new Promise(resolve=>complete=resolve);
+ const stop=startMailAccounts({ipcMain:{handle:(n,f)=>handlers[n]=f,removeHandler:n=>delete handlers[n]},safeStorage:safe,userData:dir,win:{webContents},origin:'http://127.0.0.1:8888',request:async route=>{calls.push(route);if(route==='mail/source/install')await pending;return {}},openExternal:()=>{},interval:999999});t.after(stop);
+ const disconnected=handlers['mail:disconnect']({sender:webContents,senderFrame:{url:'http://127.0.0.1:8888/'}},'imap:test');await Promise.resolve();assert.deepEqual(calls,['mail/source/install']);complete();await disconnected;assert.deepEqual(calls,['mail/source/install','mail/source/disconnect']);assert.deepEqual(new Vault(path.join(dir,'mail-credentials.enc.json'),safe).records,{});
+});
