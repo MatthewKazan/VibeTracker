@@ -60,7 +60,9 @@ def scan(app,account,jobs,profiles):
         task=tasks[0];since,upper=task['start'],task['end']
         with app.connect() as c:
             seen=[r[0] for r in c.execute("SELECT message_id FROM mail_scan_seen WHERE account_id=? AND scope=? AND julianday(received_at)>=julianday(?)-1.0/86400 AND julianday(received_at)<julianday(?)+1.0/86400 AND (body_complete=1 OR julianday(checked_at)>julianday(?)-1.0/24)",(aid,fingerprint,since,upper,until))]
-        options={'seen':seen,'folders':task.get('folders',[]),'maxBodies':8,'maxFolders':12,'budgetMs':4000,'pauseSeconds':0.15}
+        remaining=MAX_SECONDS-(time.monotonic()-started)
+        if remaining<=0:break
+        options={'timeoutSeconds':min(10,remaining),'seen':seen,'folders':task.get('folders',[]),'maxBodies':8,'maxFolders':12,'budgetMs':min(4000,max(100,int(remaining*1000))),'pauseSeconds':0.15}
         mail.SYNC['summary']=f'Reading a small Mail batch: {since[:10]} through {upper[:10]}…'
         attempts+=1
         try:result=mail.read_mail(since,upper,aid,profiles,options)

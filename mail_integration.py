@@ -342,7 +342,7 @@ def read_mail(since, until, account_id, profiles=None, options=None):
     with tempfile.TemporaryDirectory(prefix='jobtracker-mail-') as folder:
         path=Path(folder)/'input.json'
         path.write_text(json.dumps({'argv':[since,until,account_id,json.dumps(profiles or [])],'options':options or {}}));path.chmod(0o600)
-        return mail_script(['batch',str(path)])
+        return mail_script(['batch',str(path)],timeout=min(10,(options or {}).get('timeoutSeconds',10)))
 
 def pause_sync():
     global SCAN_GENERATION

@@ -43,7 +43,7 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(read.call_count,2)
         with app.connect() as c:self.assertGreater(len(json.loads(mail.checkpoint(c,'test-account')['scan_tasks'])),100)
     def test_wall_clock_budget_stops_before_starting_more_work(self):
-        clock=Mock(side_effect=[0,0,20,20])
+        clock=Mock(side_effect=[0,0,0,20,20])
         with patch.object(scanner.time,'monotonic',clock),patch.object(mail,'read_bounds',return_value={'oldest':'2000-01-01T00:00:00Z'}),patch.object(mail,'read_mail',return_value=[]) as read:mail.sync(app)
         self.assertEqual(read.call_count,1)
     def test_cancelled_page_does_not_commit_and_next_scan_resumes(self):
@@ -117,3 +117,6 @@ class ScannerTests(unittest.TestCase):
         with patch.object(mail,'read_mail',return_value={'deferred':True}):mail.sync(app)
         with app.connect() as c:self.assertFalse(mail.checkpoint(c,'test-account'))
         self.assertIn('Mail is in use',mail.SYNC['summary'])
+    def test_final_reader_inherits_only_the_remaining_invocation_time(self):
+        with patch.object(scanner.time,'monotonic',side_effect=[0,8,8,13,13]),patch.object(mail,'read_mail',return_value=[]) as read:mail.sync(app)
+        self.assertEqual(read.call_count,1);self.assertEqual(read.call_args.args[4]['timeoutSeconds'],4)
