@@ -34,6 +34,7 @@ class TextHTML(HTMLParser):
     def __init__(self,text):super().__init__();self.parts=[];self.skip=0;self.feed(text)
     def handle_starttag(self,tag,attrs):
         if tag in ('script','style'):self.skip+=1
+        if tag=='blockquote':self.parts.append('\n----- Quoted message -----\n')
         if tag in ('p','div','br','li','tr'):self.parts.append('\n')
     def handle_endtag(self,tag):
         if tag in ('script','style') and self.skip:self.skip-=1

@@ -16,7 +16,9 @@ class HardeningTests(unittest.TestCase):
     def collect(self,messages):
         with app.connect() as c:return pipeline.collect(c,messages,[dict(r) for r in c.execute('SELECT * FROM jobs')],'test-account')
     def classify(self,id,kind):
-        with app.connect() as c:pipeline.classify_one(c,dict(c.execute('SELECT * FROM emails WHERE message_id=?',(id,)).fetchone()),{'kind':kind,'evidence':''})
+        with app.connect() as c:pipeline.classify_one(c,dict(c.execute('SELECT * FROM emails WHERE message_id=?',(id,)).fetchone()),{'kind':kind,'evidence':c.execute('SELECT body FROM emails WHERE message_id=?',(id,)).fetchone()[0]})
+    def interview_message(self,id='one'):
+        m=self.message(id);m['body']='Please book an interview for Backend Engineer at Acme.';return m
     def test_manual_links_survive_inflight_confirmation_and_repeated_collection(self):
         m=self.message();m['body']='We received your application for Data Engineer at Acme.';self.collect([m])
         with app.connect() as c:
@@ -28,9 +30,9 @@ class HardeningTests(unittest.TestCase):
             self.assertEqual([r[0] for r in c.execute("SELECT job_id FROM email_jobs WHERE message_id='one'")],[self.b])
             self.assertEqual(c.execute("SELECT match_kind FROM emails WHERE message_id='one'").fetchone()[0],'manual')
     def test_stale_proposal_and_changed_job_are_rejected_without_status_write(self):
-        self.collect([self.message()]);self.classify('one','interview')
+        self.collect([self.interview_message()]);self.classify('one','interview')
         with app.connect() as c:old=mail.message_detail(c,'one')['review_token']
-        self.classify('one','rejection')
+        self.collect([self.message()]);self.classify('one','rejection')
         with app.connect() as c:
             with self.assertRaisesRegex(ValueError,'proposal changed'):mail.review(c,'one','approve',[self.a],app.save_job,old)
             latest=mail.message_detail(c,'one')['review_token']
@@ -100,7 +102,7 @@ class HardeningTests(unittest.TestCase):
             self.assertEqual(mail.inbox(c,False,query='needle',options={'limit':200})['messages'][0]['message_id'],'m0400')
             self.assertTrue(all(len(m['body'])<=800 for m in first['messages']))
     def test_other_account_proposals_cannot_be_reviewed_or_pin_applications(self):
-        self.collect([self.message()]);self.classify('one','interview')
+        self.collect([self.interview_message()]);self.classify('one','interview')
         with app.connect() as c:
             c.execute("UPDATE settings SET value=? WHERE key='mail_account'",(json.dumps({'id':'different'}),))
             with self.assertRaisesRegex(ValueError,'selected account'):mail.review(c,'one','approve',[self.a],app.save_job)
@@ -124,7 +126,7 @@ class HardeningTests(unittest.TestCase):
         with app.connect() as c:self.assertEqual(c.execute("SELECT analysis_state FROM emails WHERE message_id='one'").fetchone()[0],'queued')
     def test_http_approval_requires_displayed_token_and_rejects_stale_one(self):
         import threading,urllib.request,urllib.error
-        self.collect([self.message()]);self.classify('one','interview')
+        self.collect([self.interview_message()]);self.classify('one','interview')
         server=app.ThreadingHTTPServer(('127.0.0.1',0),app.Handler);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
         def post(data):
             request=urllib.request.Request('http://127.0.0.1:'+str(server.server_port)+'/api/emails/review',data=json.dumps(data).encode(),headers={'X-Token':app.TOKEN,'Content-Type':'application/json'})
@@ -135,7 +137,7 @@ class HardeningTests(unittest.TestCase):
             data={'message_id':'one','action':'approve','job_ids':[self.a]}
             self.assertEqual(post(data)[0],400)
             with app.connect() as c:data['expected_token']=mail.message_detail(c,'one')['review_token']
-            self.classify('one','rejection');self.assertIn('proposal changed',post(data)[1]['error']);self.assertEqual(self.status(self.a),'Interview 2')
+            self.collect([self.message()]);self.classify('one','rejection');self.assertIn('proposal changed',post(data)[1]['error']);self.assertEqual(self.status(self.a),'Interview 2')
             with app.connect() as c:data['expected_token']=mail.message_detail(c,'one')['review_token']
             self.assertEqual(post(data)[0],200);self.assertEqual(self.status(self.a),'Rejected')
         finally:server.shutdown();server.server_close();thread.join()
@@ -155,14 +157,14 @@ class HardeningTests(unittest.TestCase):
     def test_urgent_alerts_jump_a_large_backfill_without_replaying_normal_alert(self):
         messages=[]
         for i in range(140):
-            m=self.message(str(i));m['body']='Acme engineering newsletter.';messages.append(m)
+            m=self.message(str(i));m['body']='Please book an interview for Backend Engineer at Acme.' if i==139 else 'Acme engineering newsletter.';messages.append(m)
         self.collect(messages);self.classify('139','interview')
         with app.connect() as c:
             events=pipeline.notifications(c);self.assertEqual(events[0]['message_id'],'139');self.assertEqual(events[0]['kind'],'status:interview')
             self.assertFalse(any(e['message_id']=='139' and e['kind']=='added' for e in events))
             self.assertEqual(pipeline.activity(c)['total'],140)
     def test_account_switch_invalidates_pending_job_metadata_immediately(self):
-        self.collect([self.message()]);self.classify('one','interview')
+        self.collect([self.interview_message()]);self.classify('one','interview')
         with app.connect() as c:before=pipeline.revision(c)
         with patch.object(mail,'list_accounts',return_value=[{'id':'different','name':'Other account'}]):mail.select_account(app,'different')
         with app.connect() as c:

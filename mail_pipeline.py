@@ -11,7 +11,7 @@ from urllib.parse import urlparse, parse_qs, unquote, quote, urlunparse, urlenco
 from html.parser import HTMLParser
 import mail_integration as mail
 
-VERSION='company-index-v3'
+VERSION='company-index-v4-precision'
 ANALYSIS={'running':False,'error':'','current':''}
 CLASSIFY_LOCK=threading.Lock()
 TARGETS={'rejection':'Rejected','interview':'Interview pending','offer':'Offer'}
@@ -46,7 +46,23 @@ def init(c):
     c.execute('CREATE INDEX IF NOT EXISTS email_analysis_date ON emails(analysis_state,received_at)')
     c.execute('CREATE INDEX IF NOT EXISTS email_events_message ON email_events(message_id)')
     __import__('mail_sources').init(c)
-    reconcile_missing(c);bootstrap_manual_approvals(c);auto_ignore(c)
+    reconcile_missing(c);repair_precision(c);bootstrap_manual_approvals(c);auto_ignore(c)
+
+def repair_precision(c):
+    marker='precision_repair_v1'
+    if c.execute('SELECT 1 FROM mail_meta WHERE key=?',(marker,)).fetchone():return
+    jobs=[dict(r) for r in c.execute('SELECT * FROM jobs')]
+    for row in c.execute("SELECT * FROM emails WHERE review IN ('none','pending')").fetchall():
+        message=dict(row);linked,company,scope=match(message,jobs)
+        if not linked and mail.consumer_message(message) and message['match_kind']!='manual' and message['ignore_source']!='restored':
+            c.execute("UPDATE emails SET review='ignored',ignored_from='none',ignore_source='unrelated',company='',match_kind='unlinked',category='other',rejection=0,invitation=0,evidence='',analysis_state='done',analysis_error='',analysis_revision=analysis_revision+1 WHERE message_id=?",(message['message_id'],))
+            c.execute('DELETE FROM email_jobs WHERE message_id=?',(message['message_id'],))
+            c.execute('UPDATE email_events SET delivered=1 WHERE message_id=?',(message['message_id'],))
+        elif message['review']=='pending':
+            # Recheck queued proposals with the new evidence contract, preserving
+            # valid proposals and all resolved/manual decisions.
+            classify_one(c,message,{'kind':message['category'],'evidence':message['evidence']})
+    c.execute('INSERT OR REPLACE INTO mail_meta VALUES (?,1)',(marker,));touch(c)
 
 def now():return dt.datetime.now(dt.timezone.utc).isoformat()
 def touch(c):c.execute("INSERT INTO mail_meta VALUES ('revision',1) ON CONFLICT(key) DO UPDATE SET value=value+1")
@@ -72,13 +88,25 @@ def company_profiles(jobs):
     return [{**p,'terms':sorted(p['terms']),'domains':sorted(p['domains'])} for p in groups.values()]
 
 def match(message,jobs):
-    text=mail.normalized(message['sender']+' '+message['subject']+' '+message['body'])
-    compact=re.sub(r'\s+','',text)
+    current=mail.current_message(message)
+    if mail.consumer_message(current):return [],'','unlinked'
+    text=mail.normalized(current['subject']+' '+current['body']);head=mail.normalized(current['subject'])
+    from email.utils import parseaddr
+    display,address=parseaddr(current['sender']);sender=mail.normalized(display or (current['sender'] if '@' not in current['sender'] else ''))
+    domain=address.rsplit('@',1)[-1].casefold() if '@' in address else ''
     found=[]
-    for p in company_profiles(jobs):
-        # No recruiting-keyword gate: all company mentions remain visible.
-        if any(mail.contains(text,mail.normalized(t)) for t in p['terms']) or any(d in (message['sender']+' '+message['body']).casefold() for d in p['domains']):found.append(p['key'])
-        elif len(p['key'])>=8 and re.sub(r'\s+','',p['key']) in compact:found.append(p['key'])
+    for profile in company_profiles(jobs):
+        terms=[mail.normalized(t) for t in profile['terms']]
+        trusted=[]
+        for host in profile['domains']:
+            trusted.append(host)
+            trusted.append(re.sub(r'^(?:jobs|careers|apply|recruitment)\.', '',host))
+        direct=any(domain==host or domain.endswith('.'+host) for host in trusted if host)
+        named=any(mail.contains(sender,t) or mail.contains(head,t) for t in terms)
+        # Body-only brand mentions need job context. A Wallet badge, disclaimer,
+        # tracking URL or quoted thread is not evidence of an employer conversation.
+        body_match=any(mail.contains(text,t) and (mail.employment_context(current) or len(t.split())>=2) for t in terms)
+        if direct or named or body_match:found.append(profile['key'])
     linked=[j for j in jobs if company_key(j.get('company') or '') in found]
     specific=[j for j in linked if mail.contains(text,mail.normalized(j['title']))]
     linked=specific or linked
@@ -93,7 +121,7 @@ def event(c,message_id,kind):
 def extract_missing_title(message):
     # Specific role labels and application-receipt sentences, not AI guesses.
     patterns=[r'(?:job title|position title|position|role applied for|position applied for|application(?: received| submitted)?)\s*[:,–—-]\s*([^\n.!]{4,180})',r'(?:application (?:for|to)|appl(?:ying|ied) (?:for|to)|interest in)\s+(?:the\s+)?([^\n.!]{4,180}?)(?:\s+(?:position|role|at|with)\b|[.!\n]|$)',r'(?:position|role) of\s+([^\n.!]{4,180})']
-    text=message['subject']+'\n'+message['body']
+    text=mail.message_text(message)
     for pattern in patterns:
         m=re.search(pattern,text,re.I)
         if not m:continue
@@ -104,15 +132,23 @@ def extract_missing_title(message):
         return title
     return ''
 
+def role_key(title,company):
+    parts=re.split(r'\s*[|:–—]\s*|\s+-\s+',title,maxsplit=1)
+    variants={company_key(company),re.sub(r' (?:labs?|robotics|technologies|technology)$','',company_key(company))}
+    if len(parts)==2 and company_key(parts[0]) in variants:title=parts[1]
+    suffix=re.split(r'\s+(?:at|with)\s+',title,flags=re.I)
+    if len(suffix)==2 and company_key(suffix[1]) in variants:title=suffix[0]
+    return mail.normalized(title)
+
 def reconcile_missing(c):
     # Older extraction could include receipt boilerplate or a missing space before "at".
     jobs=[dict(r) for r in c.execute('SELECT * FROM jobs')]
     for suggestion in c.execute("SELECT * FROM email_missing WHERE state='suggested'").fetchall():
-        for source in c.execute('SELECT message_id FROM email_missing_messages WHERE suggestion_id=?',(suggestion['id'],)).fetchall():
+        for source in (c.execute('SELECT message_id FROM email_missing_messages WHERE suggestion_id=?',(suggestion['id'],)).fetchall() or [(suggestion['message_id'],)]):
             row=c.execute('SELECT * FROM emails WHERE message_id=?',(source[0],)).fetchone()
             if not row:continue
             message=dict(row);title=extract_missing_title(message)
-            if not any(company_key(j['company'])==company_key(suggestion['company']) and mail.normalized(j['title'])==mail.normalized(title) for j in jobs):continue
+            if not any(company_key(j['company'])==company_key(suggestion['company']) and role_key(j['title'],suggestion['company'])==role_key(title,suggestion['company']) for j in jobs):continue
             c.execute("UPDATE email_missing SET state='dismissed' WHERE id=?",(suggestion['id'],))
             if message['match_kind']!='missing' or message['review'] in ('approved','dismissed','ignored'):continue
             linked,company,scope=match(message,jobs)
@@ -121,13 +157,14 @@ def reconcile_missing(c):
 
 def detect_missing(c,message):
     if message.get('category')!='confirmation' or message.get('review') in ('approved','dismissed','ignored'):return
+    if any(mail.status_evidence(kind,message) for kind in TARGETS):return
     title=extract_missing_title(message)
     if not title:return
     company=message.get('company','').split(' / ')[0]
     if not company:return
     if mail.normalized(title) in {mail.normalized(company),company_key(company)}:return
     jobs=[dict(r) for r in c.execute('SELECT id,title,company FROM jobs')]
-    if any(company_key(j['company'])==company_key(company) and mail.normalized(j['title'])==mail.normalized(title) for j in jobs):return
+    if any(company_key(j['company'])==company_key(company) and role_key(j['title'],company)==role_key(title,company) for j in jobs):return
     c.execute('INSERT OR IGNORE INTO email_missing(message_id,company,title) VALUES (?,?,?)',(message['message_id'],company,title))
     suggestion=c.execute('SELECT id,state FROM email_missing WHERE company=? AND title=?',(company,title)).fetchone()
     c.execute('INSERT OR IGNORE INTO email_missing_messages VALUES (?,?)',(suggestion['id'],message['message_id']))
@@ -144,7 +181,7 @@ def collect(c,messages,jobs,account_id):
         if stamp.tzinfo is None:raise ValueError('Email date needs a timezone.')
         linked,company,scope=match(m,jobs)
         existing=c.execute('SELECT * FROM emails WHERE message_id=?',(m['message_id'],)).fetchone()
-        if not existing and not linked and not mail.confirmation_evidence(m):continue
+        if not existing and not linked and not (mail.confirmation_evidence(m) and mail.employment_context(m)):continue
         if existing and m['body'].strip() and (not existing['body'].strip() or len(m['body'])>=len(existing['body'])) and m['body'][:2_000_000]!=existing['body']:
             # A later Mail download may hydrate an already collected message. Never
             # downgrade a complete body to a shorter/empty transient Mail response.
@@ -248,12 +285,14 @@ def classify_one(c,message,result):
     if kind not in ('rejection','interview','offer','confirmation','other'):raise ValueError('The classifier did not return a recognized email type.')
     evidence=result.get('evidence','')
     if not isinstance(evidence,str):evidence=''
-    source=message['subject']+'\n'+message['body']
+    source=mail.message_text(message)
     warning=''
-    if kind in TARGETS and (not evidence.strip() or normalize_quote(evidence) not in normalize_quote(source)):
-        # Never display an invented quotation or discard the email. The full original
-        # message remains reviewable, with a clear warning and no automatic status edit.
-        evidence='';warning='The model quote could not be verified. Read the original email before approving this suggestion.'
+    if kind in TARGETS:
+        supported=mail.status_evidence(kind,message)
+        if not evidence.strip() or normalize_quote(evidence) not in normalize_quote(source):
+            kind='other';evidence='';warning='No status proposal: the model quote could not be verified in the current message.'
+        elif not supported or not mail.status_evidence(kind,{'subject':message['subject'],'body':evidence}):
+            kind='other';evidence='';warning='No status proposal: the quoted text does not establish this hiring outcome. Conditional wording and quoted earlier replies do not count.'
     current=c.execute('SELECT * FROM emails WHERE message_id=?',(message['message_id'],)).fetchone()
     if not current or current['review'] in ('approved','dismissed','ignored'):return
     if current['body_version']!=message.get('body_version',0):return
@@ -265,7 +304,7 @@ def classify_one(c,message,result):
         # alert after a large historical ingestion backlog drains.
         c.execute("UPDATE email_events SET delivered=1 WHERE message_id=? AND kind='added'",(message['message_id'],))
     updated=dict(current);updated['category']=kind
-    detect_missing(c,updated)
+    detect_missing(c,updated);reconcile_missing(c)
     auto_ignore(c);touch(c)
 
 def analyze_pending(app,limit=3):

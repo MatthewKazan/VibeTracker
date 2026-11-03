@@ -46,24 +46,64 @@ def normalized(text):
 def contains(text, phrase):
     return bool(phrase) and (' '+phrase+' ') in (' '+text+' ')
 
-REJECTION = re.compile(r"(?:not (?:be )?(?:moving|proceeding|going) (?:forward|ahead)|(?:will|can|could|are|have) (?:not|no longer) (?:be )?(?:offer|proceed|consider|move|pursue)|decided (?:not to|to (?:move|proceed|go) (?:forward|ahead) with other)|(?:position|role) (?:has been|is) (?:filled|closed)|(?:application|candidacy) (?:was|has been|is) (?:unsuccessful|rejected)|(?:regret|sorry) to (?:inform|let)|selected (?:another|other) candidate)", re.I)
+REJECTION = re.compile(r"(?:not (?:be )?(?:moving|move|proceeding|proceed|going|go) (?:forward|ahead)|(?:will|can|could|are|have) (?:not|no longer) (?:be )?(?:offer|proceed|consider|move|pursue)|decided (?:not to (?:move|proceed|continue|advance|pursue|offer|select|consider)|to (?:move|proceed|go) (?:forward|ahead) with other)|(?:position|role) (?:has been|is) (?:filled|closed)|(?:application|candidacy) (?:was|has been|is) (?:unsuccessful|rejected)|selected (?:another|other) candidate|(?:pursue|pursuing|chosen|choosing|selecting) (?:other|another) (?:candidate|applicant)|(?:unable|not able) to (?:offer|invite|proceed|move forward|advance)|(?:application|candidacy) (?:is )?no longer under consideration|(?:were|was|are) not selected|(?:not|won't) be taking (?:your|the) application (?:any )?further)", re.I)
 RECRUITING = re.compile(r'\b(application|applied|applying|position|role|interview|candidate|recruit|careers|hiring|opportunity|submission|resume|résumé|assessment)\b', re.I)
 
 ANALYSIS_VERSION='tracked-jobs-v2'
 CONFIRMATION=re.compile(r"(?:thank(?:s| you) (?:for (?:applying|your (?:application|interest))|you for)|(?:received|submitted|reviewing) your application|your application (?:has been|was|is) (?:received|submitted)|application (?:received|submitted)|successfully (?:applied|submitted))",re.I)
 
+def current_message(message):
+    """Current authored text only; keep the complete original in storage/UI."""
+    body=message.get('body','')
+    lines=[]
+    for line in body.splitlines():
+        if re.match(r'^\s*(?:On .{3,300}wrote:|[-_]{2,}\s*(?:Original|Forwarded|Quoted) message|Begin forwarded message:|From:\s*.+(?:@|<))',line,re.I):break
+        if re.match(r'^\s*>',line):continue
+        lines.append(line)
+    return {'subject':message.get('subject',''),'body':'\n'.join(lines),'sender':message.get('sender','')}
+
+def message_text(message):
+    current=current_message(message)
+    return current['subject']+'\n'+current['body']
+
+JOB_CONTEXT=re.compile(r'\b(?:job|application|applied|applying|candidate|candidacy|recruiting|recruiter|hiring|employment|resume|résumé|interview|technical (?:test|assessment)|coding (?:test|assessment)|engineer|developer|scientist|analyst|designer|internship|position|role)\b',re.I)
+CONSUMER_CONTEXT=re.compile(r'\b(?:boarding pass|flight (?:confirmation|itinerary|reservation)|mobile boarding|check[ -]?in (?:is|for|now)|your (?:flight|reservation|order|purchase|shipment)|order (?:confirmation|shipped)|shipping confirmation|payment (?:received|confirmation)|credit card application|loan application|visa application|rental application|apartment application)\b',re.I)
+def employment_context(message):return bool(JOB_CONTEXT.search(message_text(message)))
+def consumer_message(message):
+    text=message_text(message)
+    return bool(CONSUMER_CONTEXT.search(text)) and not bool(re.search(r'\b(?:interview|recruiting|recruiter|hiring|candidacy|employment|job application|applied for|applying for|technical (?:test|assessment))\b',text,re.I))
+
 def confirmation_evidence(message):
-    found=CONFIRMATION.search(message['subject']+'\n'+message['body'])
-    return found.group(0) if found else ''
+    text=message_text(message)
+    if consumer_message(message) or any(status_evidence(kind,message) for kind in ('rejection','interview','offer')):return ''
+    found=CONFIRMATION.search(text)
+    if not found:return ''
+    # Interest, subscriptions and generic submissions are not job receipts.
+    if not re.search(r'\b(?:application|applying|applied)\b',found.group(0),re.I) and not employment_context(message):return ''
+    return found.group(0)
 
 def invitation_evidence(message):
-    # Evaluate individual sentences so boilerplate cannot borrow an action from
-    # a different sentence. Conditional hiring promises are never invitations.
-    text = message['subject']+'\n'+message['body']
-    for sentence in re.split(r'[.!?\n]+', text):
-        if re.search(r"\b(if|should you|may|might|would be selected|if selected|potential candidates)\b",sentence,re.I): continue
-        if re.search(r"\b(?:interview|technical (?:test|assessment|challenge)|coding (?:test|assessment|challenge)|take.home (?:test|assignment)|online assessment)\b",sentence,re.I) and re.search(r"(?:please (?:complete|take|schedule|book|choose|select|submit|share|send|confirm)|(?:invite|inviting|invited) you|(?:like|love) to (?:invite|schedule|arrange|meet)|(?:schedule|book) (?:your|an|a|the)|(?:your|the) (?:interview|assessment|coding challenge) (?:is scheduled|is confirmed|has been scheduled)|(?:are you|you are) available|(?:complete|submit) (?:the|this|your) (?:technical|coding|online|take.home)|\bavailability\b)",sentence,re.I):
-            return sentence.strip()[:600]
+    # A condition and an action must not borrow context from different sentences.
+    text=re.sub(r'\s+',' ',message_text(message))
+    for sentence in re.split(r'[.!?]',text):
+        if re.search(r"\b(if|should you|may|might|would be selected|if selected|potential candidates)\b",sentence,re.I):continue
+        if re.search(r"\b(?:interview|technical (?:test|assessment|challenge)|coding (?:test|assessment|challenge)|take.home (?:test|assignment)|online assessment|phone screen|screening call)\b",sentence,re.I) and re.search(r"(?:please (?:complete|take|schedule|book|choose|select|submit|share|send|confirm)|(?:invite|inviting|invited) you|(?:like|love) to (?:invite|schedule|arrange|meet)|(?:schedule|book) (?:your|an|a|the)|(?:your|the) (?:interview|assessment|coding challenge) (?:is scheduled|is confirmed|has been scheduled)|(?:are you|you are|would you be) available|(?:complete|submit) (?:the|this|your|a|an) (?:technical|coding|online|take.home)|\bavailability\b)",sentence,re.I):return sentence.strip()[:600]
+        if employment_context(message) and re.search(r"(?:like|love) to (?:speak|chat|meet) with you|(?:availability|available).{0,80}(?:conversation|call|meeting)|(?:phone screen|screening call).{0,60}(?:scheduled|confirmed)",sentence,re.I):return sentence.strip()[:600]
+    return ''
+
+def status_evidence(kind,message):
+    if consumer_message(message) or not employment_context(message):return ''
+    text=re.sub(r'\s+',' ',message_text(message))
+    if kind=='interview':return invitation_evidence(message)
+    if kind=='rejection':
+        for sentence in re.split(r'[.!?]',text):
+            if re.search(r'\b(?:if|may|might|could|in case)\b',sentence,re.I):continue
+            found=REJECTION.search(sentence)
+            if found:return sentence.strip()[:1000]
+    if kind=='offer':
+        for sentence in re.split(r'[.!?]',text):
+            if re.search(r'\b(?:if|may|might|could|discount|coupon|sale|percent|% off)\b',sentence,re.I):continue
+            if re.search(r'(?:offer (?:you|of|for) .{0,160}\b(?:position|role|job|employment)\b|(?:job|employment) offer|offer letter|(?:review|sign).{0,60}employment agreement|offering you .{0,160}\b(?:position|role|job)\b)',sentence,re.I):return sentence.strip()[:1000]
     return ''
 
 def match(message, jobs):
@@ -164,6 +204,10 @@ def review(c, message_id, action, ids, save_job, expected_token=None):
     if action != 'link' and email['review'] != 'pending': raise ValueError('This email has already been reviewed or has no proposed rejection.')
     if action == 'approve' and not ids: raise ValueError('Choose at least one affected application.')
     if action == 'approve':
+        import mail_pipeline
+        kind=email['category']
+        if kind not in mail_pipeline.TARGETS or not email['evidence'].strip() or mail_pipeline.normalize_quote(email['evidence']) not in mail_pipeline.normalize_quote(message_text(dict(email))) or not status_evidence(kind,{'subject':email['subject'],'body':email['evidence']}) or not status_evidence(kind,dict(email)):
+            raise ValueError('The current email does not support this status proposal. Reload this email and retry analysis before approving.')
         linked = {r[0] for r in c.execute('SELECT job_id FROM email_jobs WHERE message_id=?',(message_id,))}
         if not set(ids).issubset(linked): raise ValueError('Link this email to the application first.')
     if action == 'link':

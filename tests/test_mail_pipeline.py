@@ -16,7 +16,7 @@ class PipelineTests(unittest.TestCase):
             jobs=[dict(r) for r in c.execute('SELECT * FROM jobs')]
             return pipeline.collect(c,messages,jobs,'test-account')
     def classify(self,id,kind,evidence=''):
-        with app.connect() as c:pipeline.classify_one(c,dict(c.execute('SELECT * FROM emails WHERE message_id=?',(id,)).fetchone()),{'kind':kind,'evidence':evidence})
+        with app.connect() as c:pipeline.classify_one(c,dict(c.execute('SELECT * FROM emails WHERE message_id=?',(id,)).fetchone()),{'kind':kind,'evidence':evidence or c.execute('SELECT body FROM emails WHERE message_id=?',(id,)).fetchone()[0]})
     def test_company_only_message_is_collected_even_without_any_hiring_keywords(self):
         m=self.message();m['subject']='Acme engineering newsletter';m['body']='This month we redesigned the robot arm.'
         self.assertEqual(self.collect([m]),1)
@@ -24,7 +24,7 @@ class PipelineTests(unittest.TestCase):
             e=mail.inbox(c)['messages'][0];self.assertEqual(set(e['job_ids']),{self.a,self.b});self.assertEqual(e['analysis_state'],'queued');self.assertEqual(e['review'],'none')
         self.assertEqual(self.status(self.a),'Interview 2')
     def test_activity_explains_delivered_alerts_and_read_does_not_approve(self):
-        self.collect([self.message()]);self.classify('one','interview','')
+        m=self.message();m['body']='Please book an interview for Backend Engineer at Acme.';self.collect([m]);self.classify('one','interview','')
         with app.connect() as c:
             c.execute('UPDATE email_events SET delivered=1')
             feed=pipeline.activity(c);self.assertEqual(len(feed['items']),1)
@@ -78,7 +78,7 @@ class PipelineTests(unittest.TestCase):
     def test_unverified_quote_still_keeps_original_and_warns_for_human_review(self):
         self.collect([self.message()]);self.classify('one','rejection','A fabricated phrase')
         with app.connect() as c:
-            e=mail.inbox(c)['messages'][0];self.assertEqual(e['analysis_state'],'warning');self.assertEqual(e['evidence'],'');self.assertIn('not moving forward',e['body']);self.assertEqual(e['review'],'pending')
+            e=mail.inbox(c)['messages'][0];self.assertEqual(e['analysis_state'],'warning');self.assertEqual(e['evidence'],'');self.assertIn('not moving forward',e['body']);self.assertEqual(e['review'],'none')
         self.assertEqual(self.status(self.a),'Interview 2')
     def test_pending_positive_is_in_application_metadata_without_changing_saved_status(self):
         m=self.message();m['body']='Please book an interview for Backend Engineer.';self.collect([m]);self.classify('one','interview',m['body'])
@@ -93,7 +93,7 @@ class PipelineTests(unittest.TestCase):
         old=self.message('old',role='');old['received_at']='2026-09-01T12:00:00+00:00'
         a=self.message('a');a['received_at']='2026-10-01T12:00:00+00:00'
         b=self.message('b',role='Product Designer');b['received_at']='2026-10-05T12:00:00+00:00'
-        self.collect([old,a,b]);self.classify('old','interview','');self.classify('a','rejection','');self.classify('b','rejection','')
+        old['body']='Please book an interview for Backend Engineer at Acme.';self.collect([old,a,b]);self.classify('old','interview','');self.classify('a','rejection','');self.classify('b','rejection','')
         with app.connect() as c:
             mail.review(c,'a','approve',[self.a],app.save_job);self.assertNotEqual(c.execute("SELECT review FROM emails WHERE message_id='old'").fetchone()[0],'ignored')
             mail.review(c,'b','approve',[self.b],app.save_job);row=c.execute("SELECT * FROM emails WHERE message_id='old'").fetchone()
@@ -138,7 +138,7 @@ class PipelineTests(unittest.TestCase):
         self.collect([self.message()])
         with app.connect() as c:
             s=pipeline.summary(c);self.assertEqual(s['total'],1);self.assertEqual(s['queued'],1);self.assertEqual(s['pending'],0)
-            self.classify('one','interview','')
+            self.classify('one','rejection','')
             s=pipeline.summary(c);self.assertEqual(s['pending'],1);self.assertEqual(s['queued'],0)
     def test_missing_suggestion_and_approval_survive_export_restore_id_remapping(self):
         m=self.message();m['body']='We received your application for Data Engineer at Acme.';self.collect([m]);self.classify('one','confirmation','')
@@ -193,7 +193,7 @@ class PipelineTests(unittest.TestCase):
         with app.connect() as c:self.assertEqual(mail.checkpoint(c,'test-account')['history_before'],self.bounds_start)
     def test_http_preview_search_retry_missing_draft_and_notification_ack(self):
         import threading,urllib.request,urllib.parse
-        m=self.message();m['body']+=' '+('long text '*150)+' needle-outside-preview';self.collect([m]);self.classify('one','interview','invented quote')
+        m=self.message();m['body']='Please book an interview for Backend Engineer at Acme. '+('long text '*150)+' needle-outside-preview';self.collect([m]);self.classify('one','interview','invented quote')
         receipt=self.message('missing');receipt['body']='We received your application for Data Engineer at Acme.';self.collect([receipt])
         server=app.ThreadingHTTPServer(('127.0.0.1',0),app.Handler);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
         def get(route):
@@ -208,6 +208,8 @@ class PipelineTests(unittest.TestCase):
             with app.connect() as c:self.assertEqual(c.execute("SELECT analysis_state FROM emails WHERE message_id='one'").fetchone()[0],'queued');suggestion=c.execute('SELECT id FROM email_missing').fetchone()[0]
             created=post('job',{'title':'Data Engineer','company':'Acme','date_applied':__import__('datetime').date.today().isoformat(),'status':'Waiting','mail_suggestion':suggestion})
             detail=get('emails/message?message_id=missing');self.assertIn(created['id'],detail['job_ids']);self.assertEqual(detail['missing'][0]['state'],'added')
+            state=get('state');self.assertFalse(next(j for j in state['jobs'] if j['id']==self.a)['pending_positive'])
+            pipeline.analyze_pending(app)
             state=get('state');self.assertTrue(next(j for j in state['jobs'] if j['id']==self.a)['pending_positive'])
             events=get('emails/notifications')['events'];self.assertTrue(events);post('emails/notifications/ack',{'ids':[e['id'] for e in events]});self.assertEqual(get('emails/notifications')['events'],[])
         finally:server.shutdown();server.server_close();thread.join()

@@ -163,8 +163,9 @@ class MailTests(unittest.TestCase):
             with self.assertRaises(ValueError):mail.apply_feedback(c,'one')
     def test_shortcut_classification_still_requires_manual_approval(self):
         with app.connect() as c:c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',('mail_use_shortcut','true'))
-        with patch.object(mail,'read_mail',return_value=[self.message()]):mail.sync(app)
-        with patch.object(mail,'run_shortcut',return_value={'kind':'interview','evidence':'Thank you for applying.'}):pipeline.analyze_pending(app)
+        m=self.message();m['body']='Please book an interview for Backend Engineer at Acme.'
+        with patch.object(mail,'read_mail',return_value=[m]):mail.sync(app)
+        with patch.object(mail,'run_shortcut',return_value={'kind':'interview','evidence':m['body']}):pipeline.analyze_pending(app)
         self.assertEqual(self.status(self.a),'Interview 2')
         with app.connect() as c:
             self.assertEqual(mail.inbox(c)['messages'][0]['invitation'],1)
@@ -178,7 +179,7 @@ class MailTests(unittest.TestCase):
         with app.connect() as c:
             self.assertTrue(mail.checkpoint(c,'test-account'))
             email=mail.inbox(c)['messages'][0]
-            self.assertEqual(email['analysis_state'],'warning');self.assertEqual(email['review'],'pending');self.assertEqual(email['evidence'],'')
+            self.assertEqual(email['analysis_state'],'warning');self.assertEqual(email['review'],'none');self.assertEqual(email['evidence'],'')
         self.assertEqual(self.status(self.a),'Interview 2')
 
     def test_sync_requires_explicit_account_before_reading_mail(self):
