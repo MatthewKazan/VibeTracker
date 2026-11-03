@@ -35,6 +35,11 @@ class AdNotificationTests(unittest.TestCase):
         reply=self.message('reply','Re: Your Acme application','Thanks for sending your resume. I will check with the hiring manager.','Recruiter <recruiter@acme.test>');self.collect(reply)
         self.classify(reply,'job_ad')
         with app.connect() as c:self.assertEqual([m['message_id'] for m in mail.inbox(c)['messages']],['reply'])
+    def test_role_only_alert_subject_and_dedicated_sender_are_ads_but_receipts_stay_visible(self):
+        self.collect(self.message(subject='Backend Engineer at Acme',body='View jobs in your area.'))
+        with app.connect() as c:self.assertEqual(mail.inbox(c)['messages'],[])
+        self.collect(self.message('receipt',subject='Acme application received',body='We received your application for Backend Engineer.'))
+        with app.connect() as c:self.assertEqual([m['message_id'] for m in mail.inbox(c)['messages']],['receipt'])
     def test_application_receipt_with_other_job_recommendations_is_not_an_ad(self):
         m=self.message(subject='Acme application received',body='We received your application for Backend Engineer. Other jobs you may like are below.');self.collect(m)
         with app.connect() as c:self.assertNotEqual(mail.inbox(c)['messages'][0]['category'],'job_ad')

@@ -112,6 +112,12 @@ def ad_evidence(message):
     receipt=re.search(r'(?:thank(?:s| you) for applying|(?:received|reviewing) your application|your application (?:has been|was|is) (?:received|submitted)|application received)',text,re.I)
     if receipt or status_evidence('rejection',message) or status_evidence('offer',message):return ''
     if invitation_evidence(message) and re.search(r'\b(?:your application|interview|technical (?:test|assessment)|coding (?:test|assessment)|phone screen|screening call)\b',text,re.I):return ''
+    # Dedicated job-alert addresses advertise listings even when the subject is
+    # just a role name. Never apply this to general LinkedIn messaging addresses.
+    from email.utils import parseaddr
+    sender=parseaddr(message.get('sender',''))[1].casefold()
+    if sender=='jobalerts-noreply@linkedin.com':return 'Dedicated LinkedIn job-alert sender'
+    if sender=='noreply@jobright.ai' and re.search(r'\b(?:job matches|just posted|match .{0,100} role)\b',text,re.I):return 'Jobright job recommendations'
     # Replies and follow-ups are conversations, unless explicitly bulk job alerts.
     bulk=re.search(r'\b(?:job alerts?|jobs? for you|job recommendations?|jobs? you may|you may be a fit|is hiring|hiring now|now hiring|job you may be interested|jobs you may be interested|other jobs|view .{1,60} jobs and your next steps)\b',subject,re.I)
     if bulk:return bulk.group(0)
