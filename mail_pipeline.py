@@ -11,7 +11,7 @@ from urllib.parse import urlparse, parse_qs, unquote, quote, urlunparse, urlenco
 from html.parser import HTMLParser
 import mail_integration as mail
 
-VERSION='company-index-v4-precision'
+VERSION='company-index-v5-precision'
 ANALYSIS={'running':False,'error':'','current':''}
 CLASSIFY_LOCK=threading.Lock()
 TARGETS={'rejection':'Rejected','interview':'Interview pending','offer':'Offer'}
@@ -49,15 +49,18 @@ def init(c):
     reconcile_missing(c);repair_precision(c);bootstrap_manual_approvals(c);auto_ignore(c)
 
 def repair_precision(c):
-    marker='precision_repair_v1'
+    marker='precision_repair_v2'
     if c.execute('SELECT 1 FROM mail_meta WHERE key=?',(marker,)).fetchone():return
     jobs=[dict(r) for r in c.execute('SELECT * FROM jobs')]
     for row in c.execute("SELECT * FROM emails WHERE review IN ('none','pending')").fetchall():
         message=dict(row);linked,company,scope=match(message,jobs)
-        if not linked and mail.consumer_message(message) and message['match_kind']!='manual' and message['ignore_source']!='restored':
+        if not linked and (mail.consumer_message(message) or (not mail.confirmation_evidence(message) and not mail.employment_context(message))) and message['match_kind']!='manual' and message['ignore_source']!='restored':
             c.execute("UPDATE emails SET review='ignored',ignored_from='none',ignore_source='unrelated',company='',match_kind='unlinked',category='other',rejection=0,invitation=0,evidence='',analysis_state='done',analysis_error='',analysis_revision=analysis_revision+1 WHERE message_id=?",(message['message_id'],))
             c.execute('DELETE FROM email_jobs WHERE message_id=?',(message['message_id'],))
             c.execute('UPDATE email_events SET delivered=1 WHERE message_id=?',(message['message_id'],))
+        elif not linked and message['review']=='none' and message['match_kind'] not in ('manual','missing') and message['ignore_source']!='restored':
+            c.execute("UPDATE emails SET company='',match_kind='unlinked',analysis_revision=analysis_revision+1 WHERE message_id=?",(message['message_id'],))
+            c.execute('DELETE FROM email_jobs WHERE message_id=?',(message['message_id'],))
         elif message['review']=='pending':
             # Recheck queued proposals with the new evidence contract, preserving
             # valid proposals and all resolved/manual decisions.
@@ -90,7 +93,10 @@ def company_profiles(jobs):
 def match(message,jobs):
     current=mail.current_message(message)
     if mail.consumer_message(current):return [],'','unlinked'
-    text=mail.normalized(current['subject']+' '+current['body']);head=mail.normalized(current['subject'])
+    body=re.sub(r'https?://\S+|www\.\S+',' ',current['body'],flags=re.I)
+    body=re.sub(r'(?im)^\s*(?:copyright|©|unsubscribe\b|all rights reserved\b)[^\n]*',' ',body)
+    body=re.sub(r'\b(?:Apple (?:Wallet|App\s*Store|devices)|Google Play|Microsoft Outlook|(?:sign|log) in with Apple)\b',' ',body,flags=re.I)
+    text=mail.normalized(current['subject']+' '+body);head=mail.normalized(current['subject'])
     from email.utils import parseaddr
     display,address=parseaddr(current['sender']);sender=mail.normalized(display or (current['sender'] if '@' not in current['sender'] else ''))
     domain=address.rsplit('@',1)[-1].casefold() if '@' in address else ''
@@ -105,7 +111,15 @@ def match(message,jobs):
         named=any(mail.contains(sender,t) or mail.contains(head,t) for t in terms)
         # Body-only brand mentions need job context. A Wallet badge, disclaimer,
         # tracking URL or quoted thread is not evidence of an employer conversation.
-        body_match=any(mail.contains(text,t) and (mail.employment_context(current) or len(t.split())>=2) for t in terms)
+        body_text=mail.normalized(body)
+        hiring=r'\b(?:applied|applying|your application|job application|application for|application to|interview|recruiting|recruiter|hiring|candidacy|employment|resume)\b'
+        roles=[mail.normalized(j['title']) for j in jobs if company_key(j.get('company') or '')==profile['key']]
+        body_match=False
+        for term in terms:
+            for occurrence in re.finditer(r'(?<!\w)'+re.escape(term)+r'(?!\w)',body_text):
+                nearby=body_text[max(0,occurrence.start()-200):occurrence.end()+200]
+                if len(term.split())>=2 or re.search(hiring,nearby) or any(len(role.split())>=2 and mail.contains(nearby,role) for role in roles):body_match=True;break
+            if body_match:break
         if direct or named or body_match:found.append(profile['key'])
     linked=[j for j in jobs if company_key(j.get('company') or '') in found]
     specific=[j for j in linked if mail.contains(text,mail.normalized(j['title']))]

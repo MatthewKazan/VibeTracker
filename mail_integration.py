@@ -66,7 +66,7 @@ def message_text(message):
     current=current_message(message)
     return current['subject']+'\n'+current['body']
 
-JOB_CONTEXT=re.compile(r'\b(?:job|application|applied|applying|candidate|candidacy|recruiting|recruiter|hiring|employment|resume|résumé|interview|technical (?:test|assessment)|coding (?:test|assessment)|engineer|developer|scientist|analyst|designer|internship|position|role)\b',re.I)
+JOB_CONTEXT=re.compile(r'\b(?:job|application|applied|applying|candidate|candidacy|recruiting|recruiter|hiring|employment|resume|résumé|interview|phone screen|screening call|technical (?:test|assessment)|coding (?:test|assessment)|engineer|developer|scientist|analyst|designer|internship|position|role)\b',re.I)
 CONSUMER_CONTEXT=re.compile(r'\b(?:boarding pass|flight (?:confirmation|itinerary|reservation)|mobile boarding|check[ -]?in (?:is|for|now)|your (?:flight|reservation|order|purchase|shipment)|order (?:confirmation|shipped)|shipping confirmation|payment (?:received|confirmation)|credit card application|loan application|visa application|rental application|apartment application)\b',re.I)
 def employment_context(message):return bool(JOB_CONTEXT.search(message_text(message)))
 def consumer_message(message):

@@ -101,7 +101,7 @@ class PrecisionTests(unittest.TestCase):
         with app.connect() as c:
             for ident,scope,review in [('boarding','company','none'),('manual','manual','none'),('approved','company','approved')]:
                 c.execute("INSERT INTO emails(message_id,sender,subject,body,received_at,company,match_kind,category,review,analysis_state) VALUES (?,'American Airlines <no-reply@aa.com>','Mobile boarding pass','Your flight is ready. Add to Apple Wallet.','2026-11-01T12:00:00+00:00','Apple',?,'other',?,'done')",(ident,scope,review));c.execute('INSERT INTO email_jobs VALUES (?,?)',(ident,apple));c.execute('INSERT INTO email_accounts VALUES (?,?)',(ident,'test-account'))
-            c.execute("DELETE FROM mail_meta WHERE key='precision_repair_v1'");pipeline.repair_precision(c)
+            c.execute("DELETE FROM mail_meta WHERE key='precision_repair_v2'");pipeline.repair_precision(c)
             row=c.execute("SELECT * FROM emails WHERE message_id='boarding'").fetchone();self.assertEqual(row['review'],'ignored');self.assertEqual(row['ignore_source'],'unrelated');self.assertIn('Apple Wallet',row['body'])
             self.assertEqual(c.execute("SELECT count(*) FROM email_jobs WHERE message_id='boarding'").fetchone()[0],0)
             self.assertEqual(c.execute("SELECT match_kind FROM emails WHERE message_id='manual'").fetchone()[0],'manual');self.assertEqual(c.execute("SELECT review FROM emails WHERE message_id='approved'").fetchone()[0],'approved')
@@ -133,9 +133,28 @@ class PrecisionTests(unittest.TestCase):
         self.collect(self.message('Thank you for applying.'))
         with app.connect() as c:
             mail.review(c,'precision','link',[self.b],app.save_job)
-            c.execute("UPDATE emails SET review='pending',category='interview',invitation=1,evidence='Thank you for applying.' WHERE message_id='precision'");c.execute("DELETE FROM mail_meta WHERE key='precision_repair_v1'")
+            c.execute("UPDATE emails SET review='pending',category='interview',invitation=1,evidence='Thank you for applying.' WHERE message_id='precision'");c.execute("DELETE FROM mail_meta WHERE key='precision_repair_v2'")
             pipeline.repair_precision(c);result=mail.message_detail(c,'precision');self.assertEqual(result['review'],'none');self.assertEqual(result['job_ids'],[self.b]);self.assertEqual(result['match_kind'],'manual')
     def test_common_conversation_and_offer_wording_remains_reviewable(self):
         cases=[('interview',"We would like to speak with you about the Backend Engineer position."),('interview','Please send your availability for an initial conversation about the Backend Engineer role.'),('interview','Your phone screen for Backend Engineer is scheduled for Friday.'),('offer','Attached is your offer for the Backend Engineer position.'),('offer','Please review and sign the attached employment agreement for Backend Engineer.'),('rejection',"We won't be taking your application any further for Backend Engineer.")]
         for i,(kind,body) in enumerate(cases):
             result=self.classify(self.message(body,id=str(i)),kind);self.assertEqual(result['review'],'pending',body)
+
+    def test_old_marketing_footer_and_non_job_acknowledgment_are_recoverably_excluded(self):
+        apple=self.apple()
+        with app.connect() as c:
+            for ident,subject,body in [('marketing','Winter ski pass sale','Buy a season pass. Download on Apple devices.'),('property','Re: Bowling alley','Thank you for your interest in reserving the bowling alley.')]:
+                c.execute("INSERT INTO emails(message_id,sender,subject,body,received_at,company,match_kind,category,review,analysis_state) VALUES (?,'Membership <offers@example.test>',?,?,'2026-11-01T12:00:00+00:00','Apple','company','confirmation','none','done')",(ident,subject,body));c.execute('INSERT INTO email_jobs VALUES (?,?)',(ident,apple))
+            c.execute("DELETE FROM mail_meta WHERE key='precision_repair_v2'");pipeline.repair_precision(c)
+            for row in c.execute("SELECT * FROM emails WHERE message_id IN ('marketing','property')"):
+                self.assertEqual(row['review'],'ignored');self.assertEqual(row['ignore_source'],'unrelated');self.assertEqual(row['company'],'');self.assertTrue(row['body'])
+            self.assertEqual(c.execute('SELECT count(*) FROM email_jobs').fetchone()[0],0)
+    def test_job_tool_promotion_and_tracking_links_do_not_borrow_an_apple_identity(self):
+        self.apple()
+        for i,body in enumerate(['Track every job application. Download with Apple App Store.','Track every job application. Visit https://apple.com.example.test/application to read more.','Track every job application.\nCopyright 2026 Apple Inc. All rights reserved.']):
+            m=self.message(body,'A new job search app','Job Tool <updates@example.test>',str(i));self.assertEqual(self.collect(m),0)
+
+    def test_general_engineering_news_cannot_borrow_an_incidental_brand(self):
+        self.apple()
+        m=self.message('An engineer discussed new delivery technology. The article also mentions Apple products.','Industry news','Amazon via LinkedIn <newsletters-noreply@linkedin.com>')
+        self.assertEqual(self.collect(m),0)
