@@ -525,7 +525,7 @@ def select_account(app,account_id):
     finally:mail.SYNC_LOCK.release()
 
 def export(c):
-    return {name:[dict(r) for r in c.execute('SELECT * FROM '+table)] for name,table in [('source_accounts','mail_source_accounts'),('source_refs','email_source_refs'),('provider_cursors','mail_provider_cursors')]}
+    return {name:([dict(r) for r in c.execute('SELECT * FROM '+table)] if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(table,)).fetchone() else []) for name,table in [('source_accounts','mail_source_accounts'),('source_refs','email_source_refs'),('provider_cursors','mail_provider_cursors')]}
 
 def restore(c,data):
     for row in data.get('source_accounts',[]):

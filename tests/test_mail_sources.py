@@ -129,6 +129,11 @@ class SourceStorageTests(unittest.TestCase):
             self.assertEqual(s.canonical(c,account,{**m,'remote_id':'moved'}),ident)
             other={**account,'id':'gmail:other','addresses':['other@test']};self.assertNotEqual(s.canonical(c,other,m),ident)
             self.assertEqual(mail.message_detail(c,ident)['job_ids'],[self.b])
+    def test_preprovider_snapshot_can_still_be_exported(self):
+        with app.connect() as c:
+            for table in ('email_source_refs','mail_provider_cursors','mail_source_accounts'):c.execute('DROP TABLE '+table)
+            data=mail.export(c)
+            self.assertEqual(data['source_accounts'],[]);self.assertEqual(data['source_refs'],[]);self.assertEqual(data['provider_cursors'],[])
     def test_export_has_metadata_not_credentials_and_restore_does_not_trust_cursor(self):
         account=self.source()
         with app.connect() as c:
