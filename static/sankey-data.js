@@ -13,5 +13,6 @@ function build(jobs){
  }
  return {nodes:[...nodes.values()],links:[...links.values()],total:jobs.length,inferredJobs,restartedJobs};
 }
-const api={build};if(typeof module!=='undefined')module.exports=api;else root.jobSankey=api;
+function ribbonPath(link){const x0=link.source.x1,x1=link.target.x0,mid=(x0+x1)/2;return `M${x0},${link.y0}C${mid},${link.y0},${mid},${link.y1},${x1},${link.y1}`;}
+const api={build,ribbonPath};if(typeof module!=='undefined')module.exports=api;else root.jobSankey=api;
 })(globalThis);
