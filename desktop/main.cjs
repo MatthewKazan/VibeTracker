@@ -52,13 +52,15 @@ async function start(){
  let saveTimer;const writeBounds=()=>{clearTimeout(saveTimer);try{fs.writeFileSync(windowStateFile(),JSON.stringify({...win.getNormalBounds(),maximized:win.isMaximized()}));}catch{}};
  for(const e of ['resize','move','maximize','unmaximize'])win.on(e,()=>{clearTimeout(saveTimer);saveTimer=setTimeout(writeBounds,400);});
  win.on('close',writeBounds);
- if(!smoke)mailAccountsStop=startMailAccounts({ipcMain,safeStorage,userData:app.getPath('userData'),win,origin,request:(route,body)=>backendRequest(route,body,true),openExternal:url=>shell.openExternal(url)});
+ mailAccountsStop=startMailAccounts({ipcMain,safeStorage,userData:app.getPath('userData'),win,origin,request:(route,body)=>backendRequest(route,body,true),openExternal:url=>shell.openExternal(url)});
  await win.loadURL(origin);win.show();
  if(!smoke)notificationStop=startNotifications({Notification,request:backendRequest,app,win,openEmail:id=>win.webContents.executeJavaScript('window.openEmailReview?.('+JSON.stringify(id)+')').catch(()=>{})});
  if(smoke){
   // Pass only if the backend answered and the interface actually rendered the application list.
   const rendered=await win.webContents.executeJavaScript("new Promise(resolve=>{const start=Date.now();function check(){const result={ready:!!document.querySelector('#navcount')&&document.querySelector('#rows')!==null&&typeof window.openEmailReview==='function'&&typeof state!=='undefined'&&!!state.token,review:typeof window.openEmailReview,stateReady:typeof state!=='undefined'&&!!state.token,error:document.querySelector('#errorText')?.textContent||''};if(result.ready||Date.now()-start>15000)resolve(result);else setTimeout(check,250)}check()})");
   if(!rendered.ready)throw Error('The interface did not render: '+JSON.stringify(rendered));
+  const mailBridge=await win.webContents.executeJavaScript("window.jobtrackerMail.status().then(result=>typeof result.secureStorage==='boolean')");
+  if(!mailBridge)throw Error('The desktop mail connection bridge did not initialize.');
   smokeResult('ok '+app.getVersion());setTimeout(()=>app.quit(),1000);
  }
 }

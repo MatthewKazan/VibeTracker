@@ -14,7 +14,7 @@ The first native Windows run exposed SQLite connections remaining open after tra
 
 Interactive tests use a disposable synthetic profile with mock jobs and confirmation, interview, technical test, offer, rejection, conditional wording, quoted thread, missing-role and invalid-evidence email fixtures. Checked provider-specific setup fields, Gmail/Microsoft instructions, filters, grouping/sorting, in-place approval, disapproval feedback, ignore/restore, manual relinking, notification history and unsaved status/notes through a background revision. A real packaged macOS app in a separate throwaway profile verified that the sandboxed preload/main-process connection bridge is available, encrypted-storage status is displayed and missing client IDs receive validation errors.
 
-Native packaged smoke tests require both bundled Python startup and actual UI readiness. The desktop build workflow runs the complete suites and installer/smoke tests on native macOS ARM64, Windows x64 and Linux x64 runners. Release publication is gated on successful native build results. Artifacts are checksummed after download.
+Native packaged smoke tests require bundled Python startup, actual UI readiness and a live request through the isolated mail IPC bridge. The desktop build workflow runs the complete suites and installer/smoke tests on native macOS ARM64, Windows x64 and Linux x64 runners. Release publication is gated on successful native build results. Artifacts are checksummed after download.
 
 ## Limits and privacy
 
