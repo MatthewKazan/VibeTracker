@@ -18,8 +18,13 @@ DESKTOP_TOKEN=os.environ.get('JOB_MANAGER_TOKEN')
 MAIN_TOKEN=os.environ.get('JOB_MANAGER_MAIN_TOKEN')
 DB=DATA/'jobs.sqlite3'; LOCK=threading.RLock(); TOKEN=secrets.token_urlsafe(32)
 FIELDS=['title','company','date_applied','location','status','fit','notes','url','description','latitude','longitude','follow_up','interviews_completed','applied_at']
+@contextlib.contextmanager
 def connect():
- c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; c.execute('PRAGMA journal_mode=WAL'); c.execute('PRAGMA synchronous=FULL'); return c
+ c=sqlite3.connect(DB)
+ try:
+  c.row_factory=sqlite3.Row; c.execute('PRAGMA journal_mode=WAL'); c.execute('PRAGMA synchronous=FULL')
+  with c:yield c
+ finally:c.close()
 def init():
  with connect() as c:
   c.execute('CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY, title TEXT, company TEXT, date_applied TEXT, location TEXT, status TEXT, fit REAL, notes TEXT, url TEXT, description TEXT, latitude REAL, longitude REAL, follow_up TEXT, created_at TEXT, updated_at TEXT)')
@@ -32,7 +37,7 @@ def init():
 def backup():
  folder=DATA/'backups'; folder.mkdir(exist_ok=True)
  path=folder/(dt.datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'.sqlite3')
- with connect() as src, sqlite3.connect(path) as dst: src.backup(dst)
+ with connect() as src, contextlib.closing(sqlite3.connect(path)) as dst: src.backup(dst)
  # Retain the latest 50 snapshots. Manual exports are never removed.
  for p in sorted(folder.glob('*.sqlite3'))[:-50]: p.unlink()
  return path.name
@@ -404,7 +409,7 @@ class Handler(BaseHTTPRequestHandler):
    if not re.fullmatch(r'[0-9-]+\.sqlite3',name): return self.reply({'error':'Invalid snapshot'},400)
    p=DATA/'backups'/name
    if not p.is_file(): return self.reply({'error':'Snapshot missing'},404)
-   with sqlite3.connect(p) as c:
+   with contextlib.closing(sqlite3.connect(p)) as c:
     c.row_factory=sqlite3.Row
     return self.reply({'version':2,'jobs':[dict(r) for r in c.execute('SELECT * FROM jobs')],'settings':{r['key']:json.loads(r['value']) for r in c.execute('SELECT * FROM settings')},'emails':mail_tools.export(c)})
   if path=='/api/export':

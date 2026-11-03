@@ -8,6 +8,8 @@ The complete Python suite covers parsing, matching, quote/evidence checks, condi
 
 Desktop tests exercise encryption/no plaintext persistence, insecure Linux storage refusal, preservation of locked/corrupt vaults, rollback on write failure, PKCE/state validation, cancellation/timeouts, missing offline grants, IPC origin/window guards, session-only connections and renderer-safe errors. Existing counts, forms, pending-status ranking, notification dispatch and shutdown tests remain in the suite.
 
+The first native Windows run exposed SQLite connections remaining open after transaction contexts, preventing file cleanup on Windows and risking accumulating handles during normal use. Connection and snapshot contexts now close deterministically, with regression checks for both successful/failed transactions and immediate backup-file release.
+
 ## UI and package checks
 
 Interactive tests use a disposable synthetic profile with mock jobs and confirmation, interview, technical test, offer, rejection, conditional wording, quoted thread, missing-role and invalid-evidence email fixtures. Checked provider-specific setup fields, Gmail/Microsoft instructions, filters, grouping/sorting, in-place approval, disapproval feedback, ignore/restore, manual relinking, notification history and unsaved status/notes through a background revision. A real packaged macOS app in a separate throwaway profile verified that the sandboxed preload/main-process connection bridge is available, encrypted-storage status is displayed and missing client IDs receive validation errors.
@@ -19,3 +21,5 @@ Native packaged smoke tests require both bundled Python startup and actual UI re
 No actual mail was sent, changed, marked read or seeded. No real application was approved or modified as a test. Provider exchanges and IMAP fixtures use synthetic responses; live Gmail/Outlook consent and a real IMAP server are not tested here. A user-provided registered OAuth client or app password is necessary. Generic IMAP OAuth, background agents/IDLE, Exchange's separate online archive and public preconfigured/verified Google OAuth registration are not included. Linux persistence needs an available secret store, otherwise session-only connection is offered. Oversized text is visible with a warning and receives no status proposal. See EMAIL_PORTABILITY.md for setup and remaining limits.
 
 This testing provides regression evidence, not proof that every possible failure is eliminated. macOS is ad-hoc signed and not notarized; Windows installers are unsigned. Installer smoke tests do not substitute for testing provider consent and credential-store behavior on physical Windows/Linux desktops.
+
+A synthetic direct-provider ingestion run retained 10,000 company emails in 9.7 seconds locally, returned 200 headers in 0.104 seconds (321 KB), and preserved every job status. These are single-machine observations, not performance guarantees.

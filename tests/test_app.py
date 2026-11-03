@@ -1,3 +1,4 @@
+import contextlib
 import os,sys,tempfile,unittest,json,sqlite3,io,zipfile
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -11,7 +12,7 @@ class PersistenceTests(unittest.TestCase):
   with app.connect() as c:i=app.save_job(c,{'title':'Engineer','company':'Acme','notes':'Keep this'})
   filename=app.backup()
   with app.connect() as c:self.assertEqual(c.execute('SELECT notes FROM jobs WHERE id=?',(i,)).fetchone()[0],'Keep this')
-  with sqlite3.connect(app.DATA/'backups'/filename) as c:self.assertEqual(c.execute('SELECT count(*) FROM jobs').fetchone()[0],1)
+  with contextlib.closing(sqlite3.connect(app.DATA/'backups'/filename)) as c:self.assertEqual(c.execute('SELECT count(*) FROM jobs').fetchone()[0],1)
  def test_import_transaction_rolls_back(self):
   with self.assertRaises(ValueError):
    with app.connect() as c:
@@ -51,3 +52,13 @@ class InterviewHistoryTests(unittest.TestCase):
   with app.connect() as c:
    restored=app.save_job(c,job)
   self.assertEqual(next(j for j in app.current_jobs() if j['id']==restored)['interviews_completed'],3)
+
+class ConnectionLifetimeTests(unittest.TestCase):
+ def test_transaction_context_releases_connection_on_success_and_failure(self):
+  with app.connect() as c:c.execute('SELECT 1')
+  with self.assertRaises(sqlite3.ProgrammingError):c.execute('SELECT 1')
+  with self.assertRaisesRegex(ValueError,'rollback'):
+   with app.connect() as failed:raise ValueError('rollback')
+  with self.assertRaises(sqlite3.ProgrammingError):failed.execute('SELECT 1')
+ def test_backup_releases_file_handle_immediately(self):
+  app.init();filename=app.backup();p=app.DATA/'backups'/filename;p.unlink();self.assertFalse(p.exists())
