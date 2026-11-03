@@ -106,6 +106,22 @@ def status_evidence(kind,message):
             if re.search(r'(?:offer (?:you|of|for) .{0,160}\b(?:position|role|job|employment)\b|(?:job|employment) offer|offer letter|(?:review|sign).{0,60}employment agreement|offering you .{0,160}\b(?:position|role|job)\b)',sentence,re.I):return sentence.strip()[:1000]
     return ''
 
+def ad_evidence(message):
+    """Advertising opportunities is different from a candidate conversation."""
+    current=current_message(message);subject=current['subject'];text=message_text(message)
+    receipt=re.search(r'(?:thank(?:s| you) for applying|(?:received|reviewing) your application|your application (?:has been|was|is) (?:received|submitted)|application received)',text,re.I)
+    if receipt or status_evidence('rejection',message) or status_evidence('offer',message):return ''
+    if invitation_evidence(message) and re.search(r'\b(?:your application|interview|technical (?:test|assessment)|coding (?:test|assessment)|phone screen|screening call)\b',text,re.I):return ''
+    # Replies and follow-ups are conversations, unless explicitly bulk job alerts.
+    bulk=re.search(r'\b(?:job alerts?|jobs? for you|job recommendations?|jobs? you may|you may be a fit|is hiring|hiring now|now hiring|job you may be interested|jobs you may be interested|other jobs|view .{1,60} jobs and your next steps)\b',subject,re.I)
+    if bulk:return bulk.group(0)
+    if re.match(r'\s*(?:re|fwd?)\s*:',subject,re.I):return ''
+    found=re.search(r'\b(?:great job opportunity|new job opportunity|job openings?|open positions?|role paying|starting at \$|\d+ other jobs|actively recruiting)\b',subject,re.I)
+    if found:return found.group(0)
+    for sentence in re.split(r'[.!?\n]+',current['body']):
+        if re.search(r'\b(?:came across your profile|client is (?:looking|seeking|hiring)|currently recruiting|sharing (?:a|an|some) (?:role|job|opportunit)|open to (?:new|a new) opportunit)\b',sentence,re.I) and re.search(r'\b(?:job|role|position|engineer|developer|scientist|opportunity|opportunities)\b',text,re.I):return sentence.strip()[:600]
+    return ''
+
 def match(message, jobs):
     """Explainable lexical matches; ambiguity remains visible for human resolution."""
     head = normalized(message['sender']+' '+message['subject'])
@@ -253,6 +269,7 @@ def inbox(c,include_body=True,query="",options=None):
     if options.get('show_ignored')=='0':conditions.append("e.review!='ignored'")
     category="CASE WHEN e.analysis_state='queued' AND e.review='none' THEN 'unclassified' ELSE e.category END"
     if options.get('type'):conditions.append(category+'=?');params.append(options['type'])
+    if options.get('include_ads')!='1' and options.get('type')!='job_ad':conditions.append("(e.category!='job_ad' OR e.review='pending')")
     if options.get('exclude_confirmations')=='1':conditions.append("e.category!='confirmation'")
     def localday(value):
         try:return dt.datetime.fromisoformat(value.replace('Z','+00:00')).astimezone().date().isoformat()

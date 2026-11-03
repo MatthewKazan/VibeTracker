@@ -7,3 +7,7 @@ test('newer rejection warns on an older interview for the same job only',()=>{as
 test('email grouping supports company, type and a flat list',()=>{assert.equal(t.groups(messages,'none').length,1);assert(t.groups(messages,'type').some(([name,list])=>name==='Application confirmations'&&list.length===1));assert.equal(t.groups(messages.map(m=>({...m,company:'Acme'})),'company').length,1)});
 test('email sorting supports oldest/newest and review status',()=>{assert.equal(t.sort(messages,'newest')[0].message_id,'two');assert.equal(t.sort(messages,'oldest')[0].message_id,'one');assert.equal(t.sort(messages,'status')[0].review,'pending')});
 test('unclassified saved messages have their own visible type and label',()=>{const email={analysis_state:'queued',review:'none',category:'other'};assert.equal(t.category(email),'unclassified');assert.equal(t.label(email),'Awaiting classification')});
+test('job ads stay hidden by default, explicit filters reveal them and pending review remains visible',()=>{
+ const ads=[{message_id:'ad',category:'job_ad',review:'none',analysis_state:'done'},{message_id:'pending',category:'job_ad',review:'pending'}];
+ assert.deepEqual(t.filter(ads,{}).map(m=>m.message_id),['pending']);assert.equal(t.filter(ads,{showAds:true}).length,2);assert.equal(t.filter(ads,{type:'job_ad'}).length,2);assert.equal(t.label(ads[0]),'Job ad');
+});

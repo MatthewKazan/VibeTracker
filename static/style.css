@@ -88,3 +88,5 @@ body.sidebar-collapsed .notifications-button:has(b:not(:empty))::after{content:'
 .activity-item.urgent{border-left:3px solid #edc875}.activity-item.unread{background:#2a2a2a}
 .activity-reason{font-size:12px;color:#bcbcbc}.activity-item.urgent .activity-reason{color:#edc875}
 #emailPreviewDetail [id$="mailLinkChoices"]{max-height:220px;overflow:auto}
+
+.app-version{display:block;color:var(--muted);font-size:11px;text-align:center;margin-top:10px}.notification-settings{grid-column:1/-1}.notification-settings form{max-width:860px;display:grid;gap:12px}.notification-categories{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:8px}.notification-settings details{padding:12px;border:1px solid var(--line);border-radius:8px}.notification-settings details label{margin-top:12px}.notification-times{display:flex;gap:20px}.notification-times label{flex:1}.notification-settings .check-label{display:flex;align-items:center;gap:8px}.notification-settings input[type=checkbox]{width:auto}.notification-settings summary{cursor:pointer;font-weight:600}

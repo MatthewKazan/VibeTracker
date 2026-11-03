@@ -25,7 +25,7 @@ async function start(){
  const data=path.join(app.getPath('userData'),'data');fs.mkdirSync(data,{recursive:true});
  logStream=fs.createWriteStream(path.join(data,'desktop.log'),{flags:'a'});
  secret=crypto.randomBytes(32).toString('hex');mainSecret=crypto.randomBytes(32).toString('hex');
- server=spawn(pythonExecutable(runtime),['-u','-B',path.join(backend,'app.py')],{cwd:backend,env:{...backendEnvironment(data,secret),JOB_MANAGER_MAIN_TOKEN:mainSecret},stdio:['ignore','pipe','pipe'],windowsHide:true});
+ server=spawn(pythonExecutable(runtime),['-u','-B',path.join(backend,'app.py')],{cwd:backend,env:{...backendEnvironment(data,secret),JOB_MANAGER_MAIN_TOKEN:mainSecret,JOBTRACKER_VERSION:app.getVersion()},stdio:['ignore','pipe','pipe'],windowsHide:true});
  server.stderr.on('data',d=>logStream.write(d));
  origin=await new Promise((resolve,reject)=>{
   let output='';const timer=setTimeout(()=>reject(Error('The local data engine did not start. Check '+path.join(data,'desktop.log'))),30000);

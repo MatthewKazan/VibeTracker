@@ -373,7 +373,9 @@ class Handler(BaseHTTPRequestHandler):
   if path=='/api/emails/summary':
    with connect() as c:return self.reply(mail_pipeline.summary(c))
   if path=='/api/emails/notifications':
-   with connect() as c:return self.reply({'events':mail_pipeline.notifications(c)})
+   with LOCK,connect() as c:return self.reply(__import__('mail_notifications').pending(c))
+  if path=='/api/notification-preferences':
+   with connect() as c:return self.reply(__import__('mail_notifications').preferences(c))
   if path=='/api/emails/activity':
    try:
     limit=urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get('limit',['200'])[0]
@@ -393,7 +395,7 @@ class Handler(BaseHTTPRequestHandler):
   if path=='/api/ollama': return self.reply(ai.discover())
   if path=='/api/state':
    jobs=current_jobs()
-   return self.reply({'jobs':jobs,'settings':settings(),'token':TOKEN,'data_path':str(DATA),'prompt_defaults':{'analysis_system':ai.DEFAULT_SYSTEM,'analysis_instructions':ai.DEFAULT_INSTRUCTIONS}})
+   return self.reply({'version':json.loads((ROOT/'package.json').read_text())['version'] if (ROOT/'package.json').exists() else os.environ.get('JOBTRACKER_VERSION','development'),'jobs':jobs,'settings':settings(),'token':TOKEN,'data_path':str(DATA),'prompt_defaults':{'analysis_system':ai.DEFAULT_SYSTEM,'analysis_instructions':ai.DEFAULT_INSTRUCTIONS}})
   if path=='/api/queue':
    config=settings()
    return self.reply({'current':QUEUE['current'],'remaining':len(queued_jobs(config)),'completed':QUEUE['completed'],'active':config.get('auto_analyze',True) is not False and bool(config.get('resume','').strip()) and model_loaded(config)})
@@ -433,6 +435,15 @@ class Handler(BaseHTTPRequestHandler):
    j=json.loads(self.rfile.read(n)); route=self.path
    if not isinstance(j,dict):raise ValueError('Invalid request. Refresh the app and try again.')
    if route in ('/api/import','/api/restore') and (not isinstance(j.get('jobs'),list) or not all(isinstance(r,dict) for r in j['jobs'])):raise ValueError('This backup does not contain a valid jobs list. Choose a JobTracker JSON export.')
+   if route=='/api/notification-preferences':
+    import mail_notifications
+    prefs=mail_notifications.validate(j)
+    with LOCK:
+     backup()
+     with connect() as c:
+      c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',('notification_preferences',json.dumps(prefs)));mail_pipeline.touch(c)
+      mail_notifications.pending(c)
+    return self.reply(prefs)
    if route.startswith('/api/mail/source/'):
     if not MAIN_TOKEN or self.headers.get('X-Waypoint-Main')!=MAIN_TOKEN:return self.reply({'error':'Main-process access required.'},403)
     import mail_sources
@@ -530,6 +541,7 @@ class Handler(BaseHTTPRequestHandler):
      if key.startswith('analysis_') and key in j and len(j[key])>8000:raise ValueError('Prompts are limited to 8,000 characters.')
    if route in ('/api/settings','/api/restore'):
     cfg=j if route=='/api/settings' else j.get('settings',{})
+    if 'notification_preferences' in cfg:__import__('mail_notifications').validate(cfg['notification_preferences'])
     if 'question_groups' in cfg and (not isinstance(cfg['question_groups'],list) or len(cfg['question_groups'])>100 or any(not isinstance(g,str) or not g.strip() or len(g)>100 for g in cfg['question_groups']) or len(set(cfg['question_groups']))!=len(cfg['question_groups'])):raise ValueError('Use unique group names, up to 100 characters.')
     if 'questions' in cfg:
      entries=cfg['questions']
@@ -679,7 +691,7 @@ class Handler(BaseHTTPRequestHandler):
         if match and row.get('id') is not None:job_map[row['id']]=match[0]
        if 'emails' in j:mail_tools.restore(c,j['emails'],job_map)
        for k,v in j.get('settings',{}).items():
-        if k in ('mail_prompt','mail_shortcut','mail_use_shortcut','resume','model','auto_start','profile_memory','quit_model_policy','sort_rules','status_order','status_colors','analysis_system','analysis_instructions','auto_analyze','sidebar_collapsed','questions','question_groups') or k.startswith('discussion_'): c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(k,json.dumps(v)))
+        if k in ('notification_preferences','mail_prompt','mail_shortcut','mail_use_shortcut','resume','model','auto_start','profile_memory','quit_model_policy','sort_rules','status_order','status_colors','analysis_system','analysis_instructions','auto_analyze','sidebar_collapsed','questions','question_groups') or k.startswith('discussion_'): c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(k,json.dumps(v)))
       result={'count':count,'skipped':skipped}
      elif route=='/api/backup': result={'ok':True}
      else: raise ValueError('Unknown action')

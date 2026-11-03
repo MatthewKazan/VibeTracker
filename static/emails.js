@@ -1,7 +1,7 @@
 /* Application correspondence, review queue, and durable email catch-up. */
 let emailState={messages:[],sync:{},worker:{}},emailSelected=null,emailBusy=false,emailDetailKey='',mailAccounts=[],mailSettingsInitialized=false,emailFetchRequest=0,emailVisibleLimit=200;
 const emailBodies=new Map();
-function emailQuery(offset=0,extra={}){return new URLSearchParams({query:$('#mailSearch').value,type:$('#mailType').value,pending:$('#mailPending').checked?'1':'0',exclude_confirmations:$('#mailExcludeConfirmations').checked?'1':'0',show_ignored:$('#mailShowIgnored').checked?'1':'0',from:$('#mailFrom').value,to:$('#mailTo').value,sort:$('#mailSort').value,limit:'200',offset:String(offset),...extra})}
+function emailQuery(offset=0,extra={}){return new URLSearchParams({query:$('#mailSearch').value,type:$('#mailType').value,pending:$('#mailPending').checked?'1':'0',exclude_confirmations:$('#mailExcludeConfirmations').checked?'1':'0',include_ads:$('#mailShowAds').checked?'1':'0',show_ignored:$('#mailShowIgnored').checked?'1':'0',from:$('#mailFrom').value,to:$('#mailTo').value,sort:$('#mailSort').value,limit:'200',offset:String(offset),...extra})}
 let emailNextOffset=0;
 const emailDetails=new Map();
 async function loadEmails(append=false){
@@ -36,7 +36,7 @@ function renderEmails(){
  $('#mailCheckpoint').textContent=sync.last_received_at?'Last collected email: '+new Date(sync.last_received_at).toLocaleString()+' · '+sync.last_message_id:'';
  const messages=emailState.messages;
  const visible=messages,groups=emailTools.groups(visible,$('#mailGroup').value);
- $('#emailCount').textContent=`${emailState.total??messages.length} total · ${visible.length} shown · ${emailState.matching??messages.length} match · ${emailState.pending??0} to review · ${emailState.queued??0} awaiting classification`;
+ $('#emailCount').textContent=`${emailState.total??messages.length} total · ${visible.length} shown · ${emailState.matching??messages.length} match · ${emailState.pending??0} to review · ${emailState.queued??0} awaiting classification${emailState.ads?' · '+emailState.ads+' job ads saved'+(!$('#mailShowAds').checked&&$('#mailType').value!=='job_ad'?' (hidden)':''):''}`;
  $('#mailRetryAll').disabled=!(emailState.failed>0);
  $('#emailList').innerHTML=groups.map(([group,list])=>{
   const content=$('#mailGroup').value==='company'?(()=>{const roles=new Map();for(const m of list){const role=m.match_kind==='company'?'Company correspondence':emailJobs(m).map(j=>j.title).join(' / ')||'Unlinked';if(!roles.has(role))roles.set(role,[]);roles.get(role).push(m)}return [...roles].map(([role,emails])=>`<details class="mail-role" open><summary>${esc(role)} <span class="sub">${emails.length}</span></summary>${emails.map(mailRow).join('')}</details>`).join('')})():list.map(mailRow).join('');
@@ -67,8 +67,10 @@ function renderEmailDetail(m,host=$('#emailDetail')){
  q('#mailLinkSearch').oninput=e=>host.querySelectorAll('[data-link-label]').forEach(x=>x.hidden=!x.dataset.linkLabel.includes(e.target.value.toLowerCase()));
 }
 $('#emailList').onclick=async e=>{const b=e.target.closest('[data-email]');if(b){emailSelected=b.dataset.email;try{await ensureEmailBody();await markEmailRead(emailSelected);renderEmails()}catch(err){toast(err.message)}}};
-let emailSearchTimer;$('#mailSearch').oninput=()=>{emailSelected=null;emailVisibleLimit=200;clearTimeout(emailSearchTimer);emailSearchTimer=setTimeout(loadEmails,200)};for(const id of ['mailPending','mailType','mailExcludeConfirmations','mailShowIgnored','mailFrom','mailTo','mailSort'])$('#'+id).onchange=()=>{emailSelected=null;emailVisibleLimit=200;loadEmails()};$('#mailGroup').onchange=()=>renderEmails();
-$('#mailClearFilters').onclick=()=>{for(const id of ['mailSearch','mailType','mailFrom','mailTo'])$('#'+id).value='';for(const id of ['mailPending','mailExcludeConfirmations','mailShowIgnored'])$('#'+id).checked=false;emailVisibleLimit=200;loadEmails()};
+let emailSearchTimer;$('#mailSearch').oninput=()=>{emailSelected=null;emailVisibleLimit=200;clearTimeout(emailSearchTimer);emailSearchTimer=setTimeout(loadEmails,200)};for(const id of ['mailPending','mailType','mailExcludeConfirmations','mailShowIgnored','mailShowAds','mailFrom','mailTo','mailSort'])$('#'+id).onchange=()=>{emailSelected=null;emailVisibleLimit=200;loadEmails()};$('#mailGroup').onchange=()=>renderEmails();
+$('#mailType').addEventListener('change',()=>{if($('#mailType').value==='job_ad'){$('#mailShowAds').checked=true;loadEmails()}});
+$('#mailShowAds').addEventListener('change',()=>{if(!$('#mailShowAds').checked&&$('#mailType').value==='job_ad'){$('#mailType').value='';loadEmails()}});
+$('#mailClearFilters').onclick=()=>{for(const id of ['mailSearch','mailType','mailFrom','mailTo'])$('#'+id).value='';for(const id of ['mailPending','mailExcludeConfirmations','mailShowIgnored','mailShowAds'])$('#'+id).checked=false;emailVisibleLimit=200;loadEmails()};
 $('#mailSync').onclick=async()=>{try{await api('emails/sync',{});emailState.worker.running=true;renderEmails()}catch(e){toast(e.message)}};
 $('#mailEnabled').onchange=async e=>{try{await api('emails/settings',{enabled:e.target.checked});state.settings.mail_enabled=e.target.checked;await loadEmails()}catch(err){toast(err.message);e.target.checked=!e.target.checked}};
 let emailRevision=-1,emailPollBusy=false;
@@ -114,7 +116,7 @@ function bindMissingActions(host,m){
  for(const [attribute,action] of [['data-missing-search','search'],['data-missing-dismiss','dismiss']])host.querySelectorAll('['+attribute+']').forEach(button=>button.onclick=async()=>{try{await api('emails/missing/'+action,{id:Number(button.getAttribute(attribute))});await refreshEmailSurfaces()}catch(e){toast(e.message)}});
 }
 $('#mailRetryAll').onclick=async()=>{try{await api('emails/retry',{});await loadEmails();toast('Failed email analyses queued for retry. Collection is unaffected.')}catch(e){toast(e.message)}};
-window.openEmailFull=async function(id){emailSelected=id;for(const name of ['mailSearch','mailType','mailFrom','mailTo'])$('#'+name).value='';$('#mailPending').checked=false;$('#mailExcludeConfirmations').checked=false;$('#mailShowIgnored').checked=true;document.querySelector('nav [data-view="emails"]').click();await loadEmails();await markEmailRead(id);renderEmails()};
+window.openEmailFull=async function(id){emailSelected=id;const full=await api('emails/message?message_id='+encodeURIComponent(id));$('#mailShowAds').checked=full.category==='job_ad';for(const name of ['mailSearch','mailType','mailFrom','mailTo'])$('#'+name).value='';$('#mailPending').checked=false;$('#mailExcludeConfirmations').checked=false;$('#mailShowIgnored').checked=true;document.querySelector('nav [data-view="emails"]').click();await loadEmails();await markEmailRead(id);renderEmails()};
 
 $('#mailShowMore').onclick=()=>loadEmails(true);
 
@@ -145,7 +147,8 @@ $('#previewFullEmail').onclick=()=>{
  $('#emailPreview').close();$('#jobDialog').close();$('#notificationCenter').close();openEmailFull(id);
 };
 function activityDescription(item){
- if(item.urgent)return 'Status change awaiting your approval: '+item.proposed_status;
+ if(item.urgent)return 'Status change awaiting your approval: '+item.proposed_status+(item.muted?' · alerts muted':'');
+ if(item.muted)return 'Muted · '+emailTools.label(item);
  if(item.review==='approved')return 'Status change reviewed and saved';
  if(item.review==='dismissed')return 'Status suggestion disapproved';
  if(item.review==='ignored')return 'Email ignored · no review needed';
@@ -160,7 +163,7 @@ function renderActivity(){
  $('#notificationCount').textContent=pending||unread||'';
  $('#notificationsButton').title='Notifications · '+pending+' status changes to review · '+unread+' unread emails';
  $('#notificationSummary').textContent=pending+' status changes awaiting approval · '+unread+' unread email notifications';
- $('#notificationList').innerHTML=activityState.items.map(item=>`<button class="activity-item ${item.urgent?'urgent':''} ${!item.seen?'unread':''}" data-notification-email="${esc(item.message_id)}"><span class="activity-reason">${esc(activityDescription(item))}</span><strong>${esc(item.company||'Application correspondence')}</strong><span>${esc(item.subject)}</span><span class="sub">${esc(new Date(item.at).toLocaleString())}${item.seen?' · Read':' · Unread'}</span></button>`).join('')||'<p>No email notifications yet. New company emails and suggested status changes will appear here.</p>';
+ $('#notificationList').innerHTML=activityState.items.map(item=>`<button class="activity-item ${item.urgent?'urgent':''} ${!item.seen&&!item.muted?'unread':''}" data-notification-email="${esc(item.message_id)}"><span class="activity-reason">${esc(activityDescription(item))}</span><strong>${esc(item.company||'Application correspondence')}</strong><span>${esc(item.subject)}</span><span class="sub">${esc(new Date(item.at).toLocaleString())}${item.muted?' · Muted':item.seen?' · Read':' · Unread'}</span></button>`).join('')||'<p>No email notifications yet. New company emails and suggested status changes will appear here.</p>';
  $('#notificationsRead').disabled=!unread;$('#notificationsMore').hidden=activityState.items.length>=activityState.total;
 }
 $('#notificationsButton').onclick=()=>{$('#notificationCenter').showModal();loadActivity()};

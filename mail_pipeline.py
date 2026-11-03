@@ -32,6 +32,8 @@ def init(c):
     ''')
     if 'seen' not in {r[1] for r in c.execute('PRAGMA table_info(email_events)')}:
         c.execute('ALTER TABLE email_events ADD COLUMN seen INTEGER NOT NULL DEFAULT 0')
+    if 'suppressed' not in {r[1] for r in c.execute('PRAGMA table_info(email_events)')}:c.execute('ALTER TABLE email_events ADD COLUMN suppressed INTEGER NOT NULL DEFAULT 0')
+    c.execute('CREATE INDEX IF NOT EXISTS email_events_delivery ON email_events(delivered,id)')
     c.execute("UPDATE emails SET analysis_state='done' WHERE review IN ('approved','dismissed','ignored') AND analysis_state='queued'")
     if migrating_analysis:c.execute("UPDATE emails SET analysis_state='done' WHERE review='pending' AND analysis_state='queued'")
     c.execute("UPDATE emails SET analysis_state='queued' WHERE analysis_state='running'")
@@ -46,7 +48,7 @@ def init(c):
     c.execute('CREATE INDEX IF NOT EXISTS email_analysis_date ON emails(analysis_state,received_at)')
     c.execute('CREATE INDEX IF NOT EXISTS email_events_message ON email_events(message_id)')
     __import__('mail_sources').init(c)
-    reconcile_missing(c);repair_precision(c);bootstrap_manual_approvals(c);auto_ignore(c)
+    reconcile_missing(c);repair_precision(c);repair_ads(c);bootstrap_manual_approvals(c);auto_ignore(c)
 
 def repair_precision(c):
     marker='precision_repair_v2'
@@ -66,6 +68,14 @@ def repair_precision(c):
             # valid proposals and all resolved/manual decisions.
             classify_one(c,message,{'kind':message['category'],'evidence':message['evidence']})
     c.execute('INSERT OR REPLACE INTO mail_meta VALUES (?,1)',(marker,));touch(c)
+
+def repair_ads(c):
+    if c.execute("SELECT 1 FROM mail_meta WHERE key='job_ads_v1'").fetchone():return
+    for row in c.execute("SELECT * FROM emails WHERE review='none'").fetchall():
+        if mail.ad_evidence(dict(row)):
+            c.execute("UPDATE emails SET category='job_ad',rejection=0,invitation=0,evidence='',analysis_state='done',analysis_error='',analysis_revision=analysis_revision+1 WHERE message_id=?",(row['message_id'],))
+            c.execute("UPDATE email_events SET delivered=1,suppressed=1 WHERE message_id=?",(row['message_id'],))
+    c.execute("INSERT INTO mail_meta VALUES ('job_ads_v1',1)");touch(c)
 
 def now():return dt.datetime.now(dt.timezone.utc).isoformat()
 def touch(c):c.execute("INSERT INTO mail_meta VALUES ('revision',1) ON CONFLICT(key) DO UPDATE SET value=value+1")
@@ -212,6 +222,9 @@ def collect(c,messages,jobs,account_id):
         c.execute('INSERT OR IGNORE INTO email_accounts VALUES (?,?)',(m['message_id'],account_id))
         if mail.confirmation_evidence(m):
             saved=dict(c.execute('SELECT * FROM emails WHERE message_id=?',(m['message_id'],)).fetchone());saved['category']='confirmation';detect_missing(c,saved)
+    for m in messages:
+        if mail.ad_evidence(m):
+            c.execute("UPDATE emails SET category='job_ad',rejection=0,invitation=0,evidence='',analysis_state='done',analysis_error='',analysis_revision=analysis_revision+1 WHERE message_id=? AND review='none'",(m['message_id'],))
     auto_ignore(c)
     if messages:touch(c)
     return added
@@ -296,11 +309,14 @@ def classify_one(c,message,result):
     if incomplete[0]==0 and incomplete[1]==0:return
     kind=result.get('kind')
     if kind=='other' and mail.confirmation_evidence(message):kind='confirmation'
-    if kind not in ('rejection','interview','offer','confirmation','other'):raise ValueError('The classifier did not return a recognized email type.')
+    if kind not in ('rejection','interview','offer','confirmation','job_ad','other'):raise ValueError('The classifier did not return a recognized email type.')
     evidence=result.get('evidence','')
     if not isinstance(evidence,str):evidence=''
     source=mail.message_text(message)
     warning=''
+    if kind=='job_ad' and (mail.confirmation_evidence(message) or any(mail.status_evidence(k,message) for k in TARGETS) or (re.match(r'\s*(?:re|fwd?)\s*:',message['subject'],re.I) and not mail.ad_evidence(message))):
+        kind='confirmation' if mail.confirmation_evidence(message) else 'other';warning='Kept visible: the job-ad label conflicts with application or hiring evidence. Review the original email.'
+    elif kind=='other' and mail.ad_evidence(message):kind='job_ad'
     if kind in TARGETS:
         supported=mail.status_evidence(kind,message)
         if not evidence.strip() or normalize_quote(evidence) not in normalize_quote(source):
@@ -394,24 +410,26 @@ def pending_for_jobs(c,jobs):
 
 def summary(c):
     account=mail.get_setting(c,'mail_account');aid=account['id'] if account else ''
-    counts=dict(c.execute("SELECT count(*) AS total,coalesce(sum(e.review='pending'),0) AS pending,coalesce(sum(e.analysis_state='queued' AND e.review NOT IN ('ignored','approved','dismissed')),0) AS queued,coalesce(sum(e.analysis_state='failed' AND e.review NOT IN ('ignored','approved','dismissed')),0) AS failed FROM emails e JOIN email_accounts a USING(message_id) WHERE a.account_id=?",(aid,)).fetchone())
-    return {**counts,'revision':revision(c),'analysis':dict(ANALYSIS),'worker':dict(mail.SYNC)}
+    counts=dict(c.execute("SELECT count(*) AS total,coalesce(sum(e.review='pending'),0) AS pending,coalesce(sum(e.analysis_state='queued' AND e.review NOT IN ('ignored','approved','dismissed')),0) AS queued,coalesce(sum(e.analysis_state='failed' AND e.review NOT IN ('ignored','approved','dismissed')),0) AS failed,coalesce(sum(e.category='job_ad'),0) AS ads FROM emails e JOIN email_accounts a USING(message_id) WHERE a.account_id=?",(aid,)).fetchone())
+    return {**counts,'notification_badge':(__import__('mail_notifications').preferences(c)['badge'] and __import__('mail_notifications').preferences(c)['enabled']),'revision':revision(c),'analysis':dict(ANALYSIS),'worker':dict(mail.SYNC)}
 
 def notifications(c):
-    account=mail.get_setting(c,'mail_account');aid=account['id'] if account else ''
-    return [dict(r) for r in c.execute("SELECT n.id,n.message_id,n.kind,e.company,e.subject FROM email_events n JOIN emails e USING(message_id) JOIN email_accounts a USING(message_id) WHERE a.account_id=? AND n.delivered=0 AND (n.kind='added' OR e.review='pending') ORDER BY CASE WHEN n.kind LIKE 'status:%' THEN 0 ELSE 1 END,n.id LIMIT 100",(aid,))]
+    return __import__('mail_notifications').pending(c)['events']
 
 def activity(c,limit=200):
     limit=max(1,min(10000,int(limit)))
     account=mail.get_setting(c,'mail_account');aid=account['id'] if account else ''
-    rows=[dict(r) for r in c.execute("""SELECT e.message_id,e.company,e.subject,e.category,e.review,e.analysis_state,
+    policy=__import__('mail_notifications');prefs=policy.preferences(c)
+    c.create_function('notification_allowed',7,lambda company,subject,sender,body,category,review,analysis: int(policy.allows(dict(company=company,subject=subject,sender=sender,body=body,category=category,review=review,analysis_state=analysis),prefs)))
+    rows=[dict(r) for r in c.execute("""SELECT e.message_id,e.company,e.subject,e.category,e.review,e.analysis_state,notification_allowed(e.company,e.subject,e.sender,e.body,e.category,e.review,e.analysis_state) AS policy_ok,min(n.suppressed) AS suppressed,
         max(n.id) AS event_id,max(n.at) AS at,min(n.seen) AS seen
         FROM email_events n JOIN emails e USING(message_id) JOIN email_accounts a USING(message_id)
         WHERE a.account_id=? GROUP BY e.message_id ORDER BY (e.review='pending') DESC,max(n.id) DESC""",(aid,))]
     for row in rows:
+        row['muted']=bool(row.pop('suppressed')) or not bool(row.pop('policy_ok'))
         row['urgent']=row['review']=='pending'
         row['proposed_status']=TARGETS.get(row['category'],'') if row['urgent'] else ''
-    return {'items':rows[:limit],'through':max([r['event_id'] for r in rows] or [0]),'unread':sum(not r['seen'] for r in rows),'pending':sum(r['urgent'] for r in rows),'total':len(rows)}
+    return {'items':rows[:limit],'through':max([r['event_id'] for r in rows] or [0]),'unread':sum(not r['seen'] and not r['muted'] for r in rows),'pending':sum(r['urgent'] for r in rows),'total':len(rows)}
 
 def mark_activity_seen(c,through,message_id=None):
     if type(through) is not int or through<0:raise ValueError('Invalid notification checkpoint.')
@@ -499,7 +517,7 @@ def restore(c,data,job_map):
     for event_row in data.get('events',[]):
         if not isinstance(event_row,dict) or not all(isinstance(event_row.get(k),str) for k in ('message_id','kind','at')):raise ValueError('Invalid notification backup.')
         if not c.execute('SELECT 1 FROM emails WHERE message_id=?',(event_row['message_id'],)).fetchone():continue
-        c.execute('INSERT INTO email_events(message_id,kind,at,delivered,seen) VALUES (?,?,?,?,?) ON CONFLICT(message_id,kind) DO UPDATE SET delivered=max(email_events.delivered,excluded.delivered),seen=max(email_events.seen,excluded.seen)',(event_row['message_id'],event_row['kind'],event_row['at'],int(bool(event_row.get('delivered'))),int(bool(event_row.get('seen')))))
+        c.execute('INSERT INTO email_events(message_id,kind,at,delivered,seen,suppressed) VALUES (?,?,?,?,?,?) ON CONFLICT(message_id,kind) DO UPDATE SET delivered=max(email_events.delivered,excluded.delivered),seen=max(email_events.seen,excluded.seen),suppressed=max(email_events.suppressed,excluded.suppressed)',(event_row['message_id'],event_row['kind'],event_row['at'],int(bool(event_row.get('delivered'))),int(bool(event_row.get('seen'))),int(bool(event_row.get('suppressed')))))
     if 'events' not in data:
         # Old backups contain no alert delivery state. Reconstruct archival entries
         # quietly; pending proposals still get an undelivered status alert.

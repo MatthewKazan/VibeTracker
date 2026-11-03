@@ -11,3 +11,10 @@ test('desktop notifications acknowledge only after display and open the review o
  for(let i=0;i<4;i++)await new Promise(r=>setImmediate(r));
  assert.equal(badge,1);assert.equal(shown[0].options.urgency,'critical');assert(calls.some(([r,b])=>r==='emails/notifications/ack'&&b.ids[0]===9));shown[0].emit('click');assert.deepEqual(opened,['x']);stop();
 });
+test('privacy, sound, attention and badge preferences reach desktop delivery',async()=>{
+ const shown=[],calls=[];let badge,flashes=0,bounces=0;
+ class Notification extends EventEmitter {static isSupported(){return true}constructor(options){super();this.options=options;shown.push(this)}show(){this.emit('show')}close(){}}
+ const stop=startNotifications({Notification,request:async(route,body)=>{calls.push([route,body]);return route==='emails/summary'?{pending:5,notification_badge:false}:route==='emails/notifications'?{presentation:{sound:false,previews:false,attention:false},events:[{id:1,message_id:'x',kind:'status:offer',company:'Private company',subject:'Private salary'}]}:{}},app:{setBadgeCount:n=>badge=n,dock:{bounce(){bounces++}}},win:{flashFrame(){flashes++}},openEmail(){},interval:999999});
+ for(let i=0;i<4;i++)await new Promise(r=>setImmediate(r));
+ assert.equal(badge,0);assert.equal(shown[0].options.silent,true);assert(!shown[0].options.body.includes('Private'));assert.equal(flashes,0);assert.equal(bounces,0);assert(calls.some(([r])=>r==='emails/notifications/ack'));stop();
+});
