@@ -293,14 +293,14 @@ def judge(it,sents,lines,facts,prefix,model,system,shortcut):
  if level is None:suggestion='The model could not assess this item, so it is not part of the score.'
  label='unclear' if level is None else {4:'supported',3:'partial',2:'partial',1:'gap',0:'gap' if contradicted else 'unclear'}[level]
  return {'requirement':req,'assessment':label,'job_evidence':sents[it['sent']-1][:1200],'resume_evidence':rl[0]['text'][:1200] if rl else '','resume_lines':rl,'profile_evidence':fact,'suggestion':suggestion[:1800],'importance':'required' if it['importance']=='required' else 'preferred','kind':it['kind'],'level':level,'have':info['have'],'missing':info['missing'],'to_close':info['to_close'],'contradicted':contradicted,'keywords':[],'evidence_verified':bool(ev),'group':it['group'],'raw_importance':it['importance']}
-def analyze(description,resume,model,memory="",conversation=None,system=None,instructions=None,today=None,shortcut=True):
+def analyze(description,resume,model,memory="",conversation=None,system=None,instructions=None,today=None,shortcut=True,progress=None):
  # Validate the same local model once per review, instead of tags/show requests for every requirement.
  previous=getattr(LOCAL,'validated_models',None)
  LOCAL.validated_models=set()
- try:return _analyze(description,resume,model,memory,conversation,system,instructions,today,shortcut)
+ try:return _analyze(description,resume,model,memory,conversation,system,instructions,today,shortcut,progress)
  finally:LOCAL.validated_models=previous
 
-def _analyze(description,resume,model,memory="",conversation=None,system=None,instructions=None,today=None,shortcut=True):
+def _analyze(description,resume,model,memory="",conversation=None,system=None,instructions=None,today=None,shortcut=True,progress=None):
  today=today or datetime.date.today();current_date=today.isoformat()
  system=(system or '').strip() or DEFAULT_SYSTEM
  instructions=(instructions or '').strip() or DEFAULT_INSTRUCTIONS
@@ -312,6 +312,7 @@ def _analyze(description,resume,model,memory="",conversation=None,system=None,in
   t=t.strip()[:600]
   if t and norm(t) not in {norm(f) for f in facts}:facts.append(t)
  facts=facts[-40:]
+ if progress:progress(stage='extracting')
  sents=sentences(description)
  items=extract_items(sents,model,system)
  if not items:
@@ -320,7 +321,12 @@ def _analyze(description,resume,model,memory="",conversation=None,system=None,in
  if not items:raise ValueError('No requirements found in the saved description. Paste the actual posting text and retry.')
  # Everything before REQUIREMENT is identical across calls so Ollama can reuse its prompt cache.
  prefix=STAGE2.replace('{instructions}',instructions)+'\nTODAY: '+current_date+'\nRÉSUMÉ:\n'+'\n'.join(f'L{i} {t}{date_note(t,today)}' for i,t in enumerate(lines,1))+'\nFACTS FROM THE USER (true; count as evidence):\n'+('\n'.join(f'F{i} {t}' for i,t in enumerate(facts,1)) or 'none')+'\n'
- rows=[judge(it,sents,lines,facts,prefix,model,system,shortcut) for it in items]
+ rows=[]
+ for it in items:
+  if progress:progress(stage='reviewing',completed=len(rows),total=len(items),requirement=it['req'])
+  rows.append(judge(it,sents,lines,facts,prefix,model,system,shortcut))
+  if progress:progress(stage='reviewing',completed=len(rows),total=len(items),requirement=it['req'])
+ if progress:progress(stage='finalizing',completed=len(rows),total=len(items))
  size=Counter(r['group'] for r in rows)
  # Atomic children of one list share its weight, so a 5-topic bullet can't outweigh a degree.
  for r in rows:r['weight']=round(IMPORTANCE_W[r.pop('raw_importance')]*KIND_W.get(r['kind'],1)/size[r.pop('group')],3)

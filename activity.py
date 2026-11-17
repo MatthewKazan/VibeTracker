@@ -20,7 +20,7 @@ def ticket():
         check();return EPOCH
 
 def check(epoch=None):
-    if paused() or epoch is not None and epoch!=EPOCH:raise Paused('Low-resource mode is on. Resume background activity to use AI, syncing or web lookups.')
+    if paused() or epoch is not None and epoch!=EPOCH:raise Paused('Low-resource mode is on. Resume background activity to use AI, syncing or background web activity.')
 
 def configure(value):
     global EPOCH,UNLOAD_ERROR

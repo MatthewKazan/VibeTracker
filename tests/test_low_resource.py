@@ -66,9 +66,10 @@ class LowResourceAPITests(unittest.TestCase):
    state=self.request('state');self.assertEqual(state['jobs'][0]['notes'],'Saved')
    self.assertEqual(state['settings']['questions'][0]['answer'],'Robots');self.assertTrue(state['settings']['auto_start']);self.assertTrue(state['settings']['auto_analyze'])
    self.assertFalse(self.request('queue')['active']);self.assertEqual(self.request('emails/notifications')['events'],[]);ai.assert_not_called()
-   for route,body in [('ai/start',{}),('ai/load',{}),('emails/sync',{}),('extract',{'text':'Robot engineer'}),('questions/search',{'query':'Robots'})]:
+   for route,body in [('ai/start',{}),('ai/load',{}),('emails/sync',{}),('questions/search',{'query':'Robots'})]:
     with self.assertRaises(urllib.error.HTTPError) as error:self.request(route,body)
     self.assertIn('Low-resource',error.exception.read().decode())
+   result=self.request('extract',{'text':'Job title: Robot engineer\nCompany: Synthetic QA\nLocation: Remote\nPython required.'});self.assertEqual(result['title'],'Robot engineer');ai.assert_not_called()
    app.init();self.assertTrue(activity.paused());self.request('activity',{'paused':False});self.assertFalse(activity.paused())
  def test_interrupted_classification_remains_queued_without_a_status_change(self):
   with app.connect() as c:
@@ -92,3 +93,19 @@ class LowResourceAPITests(unittest.TestCase):
    result=self.request('activity',{'paused':True});self.assertTrue(result['paused']);self.assertIn('Synthetic unload failure',result['unload_error'])
    self.assertEqual([c.args[1]['model'] for c in calls.call_args_list if c.args[0]=='generate'],['selected-model:latest'])
   with patch.object(app.ai,'call',return_value={'models':[]}):self.assertFalse(self.request('activity',{'paused':True})['unload_error'])
+
+class PostingLookupPauseTests(unittest.TestCase):
+ def tearDown(self):activity.configure(False)
+ def test_paused_lookup_uses_public_fetch_and_never_starts_model(self):
+  from unittest.mock import MagicMock
+  activity.configure(True)
+  response=MagicMock();response.__enter__.return_value.read.return_value=b'<h1>Robotics engineer</h1><p>Python required.</p>'
+  opener=MagicMock();opener.open.return_value=response
+  with patch.object(app,'settings',return_value={'model':'installed'}),patch.object(app,'ready_ai') as ready,patch.object(app.ai,'generate') as generate,patch.object(app.urllib.request,'build_opener',return_value=opener),patch.object(app.socket,'getaddrinfo',return_value=[(None,None,None,None,('93.184.216.34',443))]),patch.object(app.location_tools,'normalize',side_effect=lambda loc,desc,fetch:(loc,False,False)):
+   result=app.extract('https://example.test/job')
+   self.assertIn('Python',result['description']);opener.open.assert_called();ready.assert_not_called();generate.assert_not_called()
+  self.assertFalse(app.POSTING_LOCAL.manual)
+  with self.assertRaises(activity.Paused):app.fetch('https://example.test/job')
+ def test_paused_manual_lookup_still_rejects_private_destinations(self):
+  activity.configure(True)
+  with self.assertRaisesRegex(ValueError,'public'):app.extract('http://127.0.0.1/job')

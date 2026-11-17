@@ -96,3 +96,5 @@ body.sidebar-collapsed .notifications-button:has(b:not(:empty))::after{content:'
 .add-application summary{color:#1b1b1b}@media(max-width:1150px){main>header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start}main>header>.actions{grid-column:2;grid-row:1;margin-left:0;justify-self:end}main>header>.applied{grid-column:1 / -1;justify-self:start}}@media(max-width:550px){main>header{grid-template-columns:minmax(0,1fr)}main>header>.actions{grid-column:1;grid-row:1}main>header>.applied{grid-column:1}}
 
 .capture .inline input{min-width:0;flex:1}.capture .inline button{flex:0 0 auto}
+
+#draftProgress{display:block;width:100%;height:8px;margin:12px 0;accent-color:var(--green)}#draftWork{font-size:13px;overflow-wrap:anywhere}

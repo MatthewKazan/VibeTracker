@@ -42,3 +42,21 @@ class DraftEndpointTests(unittest.TestCase):
  def test_no_resume_and_invalid_description_do_not_start_model(self):
   for body in ({'description':'Python','analyze':True},{'description':['invalid']}):
    (result,status),analyze=self.request(body,{'resume':''});self.assertEqual(status,400);analyze.assert_not_called()
+
+class ReviewProgressTests(unittest.TestCase):
+ def test_analysis_reports_real_requirement_counts_without_changing_result(self):
+  items=[{'req':'Python','sent':1,'importance':'required','kind':'skill','group':'1'},{'req':'SQL','sent':2,'importance':'required','kind':'skill','group':'2'}]
+  events=[]
+  with patch.object(ai,'extract_items',return_value=items):
+   result=ai.analyze('Python required. SQL required.','Python and SQL','local',progress=lambda **p:events.append(p))
+  self.assertEqual(result['score'],100)
+  self.assertEqual(events[0]['stage'],'extracting')
+  reviews=[p for p in events if p['stage']=='reviewing']
+  self.assertEqual([p['completed'] for p in reviews],[0,1,1,2]);self.assertTrue(all(p['total']==2 for p in reviews));self.assertEqual(reviews[-1]['requirement'],'SQL');self.assertEqual(events[-1]['stage'],'finalizing')
+ def test_progress_records_are_bounded_and_isolated(self):
+  import app
+  with patch.object(app,'DRAFT_PROGRESS',{}):
+   app.draft_progress('one',{'stage':'reviewing','completed':2,'total':5});app.draft_progress('two',{'stage':'loading'})
+   self.assertEqual(app.draft_progress('one')['completed'],2);self.assertEqual(app.draft_progress('two')['stage'],'loading')
+   for i in range(150):app.draft_progress(str(i),{'stage':'complete'})
+   self.assertLessEqual(len(app.DRAFT_PROGRESS),128)

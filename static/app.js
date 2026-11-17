@@ -52,30 +52,48 @@ chart('#statusChart',counts(j=>j.status));chart('#monthChart',counts(j=>(j.date_
 $('#reminders').innerHTML=jobs.filter(j=>j.follow_up).sort((a,b)=>a.follow_up.localeCompare(b.follow_up)).map(j=>`<div class="barrow"><div class="barlabel"><b>${esc(j.company||j.title)}</b><span>${esc(j.follow_up)}${j.follow_up<today()?' · overdue':''}</span></div><span class="sub">${esc(j.title)}</span></div>`).join('')||'<p>No follow-ups scheduled. Add a date to any application.</p>';renderFlow()}
 function chart(id,counts,chrono=false){let entries=Object.entries(counts).sort(chrono?((a,b)=>a[0].localeCompare(b[0])):((a,b)=>b[1]-a[1])).slice(0,12);const max=Math.max(...entries.map(e=>e[1]),1);$(id).innerHTML=entries.map(([k,v])=>`<div class="barrow"><div class="barlabel"><span>${esc(k)}</span><b>${v}</b></div><div class="bar"><span style="width:${v/max*100}%;${id==='#statusChart'?'background:'+statusColor(k):''}"></span></div></div>`).join('')||'<p>Your charts will grow with your applications.</p>'}
 let draftRequest=0;
-function resetDraftReview(){draftRequest++;$('#draftReview').hidden=true;$('#draftReview').setAttribute('aria-busy','false');$('#draftKeywords').innerHTML='';$('#draftAnalysis').innerHTML='';$('#extract').disabled=backgroundPaused();$('#extract').textContent='Autofill ↗'}
+function resetDraftReview(){draftRequest++;$('#draftReview').hidden=true;$('#draftReview').setAttribute('aria-busy','false');$('#draftKeywords').innerHTML='';$('#draftAnalysis').innerHTML='';$('#extract').disabled=false;$('#extract').textContent='Autofill ↗'}
 $('#jobDialog').addEventListener('close',resetDraftReview);
 function openJob(id){resetDraftReview();window.emailDraftSuggestion=null;editing=id||null;const f=$('#jobForm');f.reset();$('#paste').value='';$('#extractNote').textContent='Autofill reads the posting. Missing US states may be looked up using OpenStreetMap (city name only). Review before saving.';const j=state.jobs.find(j=>j.id===id)||{date_applied:today(),status:'Waiting'};for(const [k,v] of Object.entries(j))if(f.elements[k])f.elements[k].value=v??'';window.jobBaseRecord={...j};window.jobFormBaseline=new URLSearchParams(new FormData(f)).toString();$('#delete').hidden=!id;$('#dialogTitle').textContent=id?'Application details':'Add an application';if(window.renderJobEmails)renderJobEmails(id);$('#jobDialog').showModal()}
 async function extract(){
  const request=++draftRequest,b=$('#extract'),f=$('#jobForm');
  const current=()=>request===draftRequest&&$('#jobDialog').open;
- b.disabled=true;b.textContent='Reading…';$('#draftReview').hidden=false;$('#draftReview').setAttribute('aria-busy','true');$('#draftKeywords').innerHTML='';$('#draftAnalysis').innerHTML='';$('#draftStatus').textContent='Starting analysis · reading the posting for keywords and résumé recommendations…';
+ b.disabled=true;b.textContent='Reading…';$('#draftReview').hidden=false;$('#draftReview').setAttribute('aria-busy','true');$('#draftSuggestions').open=false;$('#draftProgress').hidden=false;$('#draftProgress').removeAttribute('value');$('#draftWork').textContent='Reading the full job posting';$('#draftKeywords').innerHTML='';$('#draftAnalysis').innerHTML='';$('#draftStatus').textContent='Starting analysis · reading the posting…';
  try{
   const j=await api('extract',{url:f.elements.url.value,text:$('#paste').value});if(!current())return;
   for(const k of ['title','company','location','description','fit','date_applied'])if(f.elements[k])f.elements[k].value=(editing&&k==='date_applied'?f.elements[k].value:j[k])??'';
-  $('#extractNote').textContent=(j.warning||j.source)+'. Review missing or uncertain fields before saving.';
-  const description=f.elements.description.value;
-  const coverage=await api('fit/draft',{description});if(!current())return;
+  $('#extractNote').textContent=(j.warning||j.source)+'. Autofill complete — review the fields and save whenever you’re ready.';
+  // Suggestions have their own lifecycle: neither Autofill nor Save waits for them.
+  void analyzeDraft(f.elements.description.value,request);
+ }catch(e){if(current()){$('#extractNote').textContent=e.message+'. Try pasting the posting below.';$('#draftStatus').textContent='Suggestions unavailable. You can still fill in and save the application.';$('#draftProgress').hidden=true;$('#draftWork').textContent='';$('#draftReview').setAttribute('aria-busy','false')}}
+ finally{if(current()){b.disabled=false;b.textContent='Autofill ↗'}}
+}
+async function analyzeDraft(description,request){
+ const current=()=>request===draftRequest&&$('#jobDialog').open,f=$('#jobForm');
+ const progressId=crypto.randomUUID();let progressTimer,finished=false;
+ async function pollProgress(){if(finished||!current())return;try{const p=await api('fit/draft/progress',{progress_id:progressId});if(!finished&&current())renderDraftProgress(p)}catch{}if(!finished&&current())progressTimer=setTimeout(pollProgress,800)}
+ const unchanged=()=>{if(f.elements.description.value===description)return true;$('#draftStatus').textContent='The description changed. Autofill again to update suggestions; you can save now.';return false};
+ $('#draftStatus').textContent='Generating suggestions in the background. You can save now.';$('#draftWork').textContent='Comparing posting keywords with your résumé';
+ try{
+  const coverage=await api('fit/draft',{description});if(!current()||!unchanged())return;
   renderDraftKeywords(coverage);
   if(!coverage.can_analyze){$('#draftStatus').textContent=coverage.message;return}
-  if(backgroundPaused()){$('#draftStatus').textContent='Keyword comparison ready. Resume background activity to run the local AI review.';return}
-  $('#draftStatus').textContent='Keywords ready · reviewing every requirement against your résumé with the local model…';b.textContent='Analyzing…';
-  const result=await api('fit/draft',{description,analyze:true});if(!current())return;
-  if(f.elements.description.value!==description){$('#draftStatus').textContent='The description changed during analysis. Click Autofill again to review the updated posting.';return}
+  if(backgroundPaused()){$('#draftStatus').textContent='Keywords ready. Local AI is paused; you can save now.';return}
+  $('#draftStatus').textContent='Keywords ready · résumé suggestions are still running. You can save now.';
+  renderDraftProgress({stage:'waiting'});progressTimer=setTimeout(pollProgress,400);
+  const result=await api('fit/draft',{description,analyze:true,progress_id:progressId});if(!current()||!unchanged())return;
   renderAnalysis(result.analysis,'#draftAnalysis');f.elements.fit.value=result.analysis.score??'';
-  $('#draftStatus').textContent='Review ready. Check recommendations against your experience before using them.';
- }catch(e){if(current()){$('#draftStatus').textContent=e.message+' You can still edit and save the application.';$('#extractNote').textContent='If the posting could not be read, paste its full text and try Autofill again.'}}
- finally{if(current()){b.disabled=backgroundPaused();b.textContent='Autofill ↗';$('#draftReview').setAttribute('aria-busy','false')}}
+  $('#draftStatus').textContent='Suggestions ready to view whenever you like. You can save now.';renderDraftProgress({stage:'complete',completed:result.analysis.requirements?.length||0,total:result.analysis.requirements?.length||0});
+ }catch(e){if(current())$('#draftStatus').textContent=e.message+' You can still edit and save the application.'}
+ finally{finished=true;clearTimeout(progressTimer);if(current()){$('#draftReview').setAttribute('aria-busy','false');$('#draftProgress').hidden=true;$('#draftWork').textContent=''}}
 }
+function renderDraftProgress(p){
+ const bar=$('#draftProgress');bar.hidden=false;
+ if(p.total>0){bar.max=p.total;bar.value=p.completed||0}else bar.removeAttribute('value');
+ const stages={waiting:'Waiting for the local model',loading:'Preparing the local model',extracting:'Finding requirements in the full posting',finalizing:'Finalizing the evidence review',complete:'Review complete',failed:'Review stopped'};
+ $('#draftWork').textContent=p.stage==='reviewing'?`${p.completed} of ${p.total} requirements reviewed (${Math.round(100*p.completed/p.total)}%) · ${p.requirement||''}`:stages[p.stage]||'Starting review';
+}
+
 function renderDraftKeywords(r){$('#draftKeywords').innerHTML=`<p>${esc(r.message)}</p>${r.matched.length?`<p><b>Already in your résumé:</b> ${r.matched.map(esc).join(', ')}</p>`:''}${r.missing.length?`<details><summary>${r.missing.length} posting keywords to consider</summary>${r.missing.map(k=>`<article><h4>${esc(k.term)}</h4><blockquote>${esc(k.job_evidence)}</blockquote><p>${esc(k.advice)}</p></article>`).join('')}</details>`:''}`;}
 $('#jobForm').onsubmit=async e=>{e.preventDefault();const b=e.submitter;b.disabled=true;try{let j=Object.fromEntries(new FormData(e.target));if(window.emailDraftSuggestion)j.mail_suggestion=window.emailDraftSuggestion;if(editing)j.id=editing;await api('job',j);$('#jobDialog').close();await refresh();if(window.emailDraftSuggestion){await refreshEmailSurfaces();window.emailDraftSuggestion=null}toast('Application saved to disk')}catch(e){toast(e.message)}finally{b.disabled=false}};
 $('#delete').onclick=async()=>{if(!confirm('Delete this application? A recovery snapshot is kept.'))return;try{await api('delete',{id:editing});$('#jobDialog').close();await refresh();toast('Application deleted; recovery snapshot saved')}catch(e){toast(e.message)}};
