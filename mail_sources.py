@@ -4,6 +4,7 @@ Credentials live in memory only. The Electron main process owns encrypted persis
 Provider response URLs are validated before bearer credentials are attached.
 """
 import base64
+import activity
 import datetime as dt
 import email.policy
 from email.parser import BytesParser
@@ -64,7 +65,7 @@ def request_json(url,headers=None,form=None):
     data=urlparse.urlencode(form).encode() if form is not None else None
     req=urllib.request.Request(url,data=data,headers=headers or {})
     try:
-        with urllib.request.build_opener(NoRedirect).open(req,timeout=30) as response:
+        with activity.open_url(req,timeout=30,handlers=(NoRedirect,)) as response:
             raw=response.read(12_000_001)
             if len(raw)>12_000_000:raise SourceError('The mail provider response is too large. Retry with a smaller page.')
             return json.loads(raw)
@@ -79,6 +80,7 @@ def request_json(url,headers=None,form=None):
             raise SourceError('The mail provider is temporarily limiting requests. Saved progress is unchanged; retry after '+dt.datetime.fromtimestamp(retry_at).strftime('%H:%M:%S')+'.',exc.code,retry_at) from None
         if exc.code in (404,410):raise SourceError('The saved mail cursor or message is no longer available.',exc.code) from None
         raise SourceError('The mail provider request failed (HTTP '+str(exc.code)+'). Saved progress is unchanged.',exc.code) from None
+    except activity.Paused:raise
     except (OSError,ValueError) as exc:
         if isinstance(exc,SourceError):raise
         raise SourceError('The mail provider could not be reached or returned an invalid response. Retry later.') from None
@@ -310,66 +312,79 @@ def read_imap_message(connection,ident):
 
 class IMAP:
     def __init__(self,config,update=lambda value:None,factory=imaplib.IMAP4_SSL,**kwargs):self.config=dict(config);self.factory=factory
+    @staticmethod
+    def cancel(connection):
+        import socket
+        sock=getattr(connection,'sock',None)
+        if sock:
+            try:sock.shutdown(socket.SHUT_RDWR)
+            except OSError:pass
     def connect(self):
+        activity.check()
         c=self.config
         try:
             connection=self.factory(c['host'],int(c.get('port',993)),ssl_context=ssl.create_default_context(),timeout=30)
-            connection.login(c.get('username') or c['email'],c['password']);return connection
+            with activity.cancellable(lambda:self.cancel(connection)):
+                connection.login(c.get('username') or c['email'],c['password']);activity.check()
+            return connection
         except (imaplib.IMAP4.error,OSError):raise SourceError('Could not connect or authenticate to IMAP. Check the server, username and app password.') from None
     def profile(self):
         connection=self.connect()
-        try:
-            status,_=connection.list()
-            if status!='OK':raise SourceError('The IMAP account could not list its folders.')
-        finally:
-            try:connection.logout()
-            except Exception:pass
-        c=self.config;address=c['email']
-        return {'id':identity('imap',c.get('username') or address,c['host']+':'+str(c.get('port',993))),'provider':'imap','name':address+' · IMAP','addresses':[address]}
+        with activity.cancellable(lambda:self.cancel(connection)):
+            try:
+                status,_=connection.list()
+                if status!='OK':raise SourceError('The IMAP account could not list its folders.')
+            finally:
+                try:connection.logout()
+                except Exception:pass
+            c=self.config;address=c['email']
+            return {'id':identity('imap',c.get('username') or address,c['host']+':'+str(c.get('port',993))),'provider':'imap','name':address+' · IMAP','addresses':[address]}
     def page(self,cursor):
         state=json.loads(json.dumps(cursor or {}));connection=self.connect()
-        try:
-            if not state or state.get('complete'):
-                status,rows=connection.list()
-                if status!='OK':raise SourceError('Could not enumerate IMAP folders. Saved progress is unchanged.')
-                folders=[base64.b64encode(name).decode() for row in rows if (name:=imap_folder(row)) is not None]
-                state={'folders':folders,'index':0,'positions':state.get('positions',{})}
-            if state['index']>=len(state['folders']):state['complete']=True;return [],state,True
-            folder=state['folders'][state['index']];name=base64.b64decode(folder)
-            quoted=b'"'+name.replace(b'\\',b'\\\\').replace(b'"',b'\\"')+b'"'
-            status,_=connection.select(quoted,readonly=True)
-            if status!='OK':raise SourceError('An IMAP folder is unavailable. Saved progress is unchanged.')
-            _,validity=connection.response('UIDVALIDITY')
-            if not validity or not validity[0]:raise SourceError('The IMAP server did not provide UIDVALIDITY; a safe checkpoint cannot be saved.')
-            validity=validity[0].decode() if isinstance(validity[0],bytes) else str(validity[0])
-            previous=state['positions'].get(folder,{})
-            last=previous.get('uid',0) if previous.get('validity')==validity else 0
-            status,data=connection.uid('search',None,'UID',str(last+1)+':*')
-            if status!='OK':raise SourceError('The IMAP message search failed. Saved progress is unchanged.')
-            ids=sorted(int(v) for v in (data[0] or b'').split() if int(v)>last);batch=ids[:20];messages=[]
-            for ident in batch:
-                message=read_imap_message(connection,ident);message.update(remote_id=folder+':'+validity+':'+str(ident),folder_id=folder);messages.append(message)
-            state['positions'][folder]={'validity':validity,'uid':batch[-1] if batch else last}
-            if len(ids)<=len(batch):state['index']+=1
-            state['complete']=state['index']>=len(state['folders'])
-            return messages,state,state['complete']
-        except (imaplib.IMAP4.error,OSError):raise SourceError('IMAP was interrupted. Saved progress is unchanged; retry the connection.') from None
-        finally:
-            try:connection.logout()
-            except Exception:pass
+        with activity.cancellable(lambda:self.cancel(connection)):
+            try:
+                if not state or state.get('complete'):
+                    status,rows=connection.list()
+                    if status!='OK':raise SourceError('Could not enumerate IMAP folders. Saved progress is unchanged.')
+                    folders=[base64.b64encode(name).decode() for row in rows if (name:=imap_folder(row)) is not None]
+                    state={'folders':folders,'index':0,'positions':state.get('positions',{})}
+                if state['index']>=len(state['folders']):state['complete']=True;return [],state,True
+                folder=state['folders'][state['index']];name=base64.b64decode(folder)
+                quoted=b'"'+name.replace(b'\\',b'\\\\').replace(b'"',b'\\"')+b'"'
+                status,_=connection.select(quoted,readonly=True)
+                if status!='OK':raise SourceError('An IMAP folder is unavailable. Saved progress is unchanged.')
+                _,validity=connection.response('UIDVALIDITY')
+                if not validity or not validity[0]:raise SourceError('The IMAP server did not provide UIDVALIDITY; a safe checkpoint cannot be saved.')
+                validity=validity[0].decode() if isinstance(validity[0],bytes) else str(validity[0])
+                previous=state['positions'].get(folder,{})
+                last=previous.get('uid',0) if previous.get('validity')==validity else 0
+                status,data=connection.uid('search',None,'UID',str(last+1)+':*')
+                if status!='OK':raise SourceError('The IMAP message search failed. Saved progress is unchanged.')
+                ids=sorted(int(v) for v in (data[0] or b'').split() if int(v)>last);batch=ids[:20];messages=[]
+                for ident in batch:
+                    message=read_imap_message(connection,ident);message.update(remote_id=folder+':'+validity+':'+str(ident),folder_id=folder);messages.append(message)
+                state['positions'][folder]={'validity':validity,'uid':batch[-1] if batch else last}
+                if len(ids)<=len(batch):state['index']+=1
+                state['complete']=state['index']>=len(state['folders'])
+                return messages,state,state['complete']
+            except (imaplib.IMAP4.error,OSError):raise SourceError('IMAP was interrupted. Saved progress is unchanged; retry the connection.') from None
+            finally:
+                try:connection.logout()
+                except Exception:pass
 
     def message(self,remote):
         folder,validity,ident=remote.rsplit(':',2);connection=self.connect()
-        try:
-            name=base64.b64decode(folder);quoted=b'"'+name.replace(b'\\',b'\\\\').replace(b'"',b'\\"')+b'"'
-            status,_=connection.select(quoted,readonly=True)
-            if status!='OK':return None
-            _,current=connection.response('UIDVALIDITY')
-            if not current or not current[0] or current[0].decode()!=validity:return None
-            message=read_imap_message(connection,int(ident));message.update(remote_id=remote,folder_id=folder);return message
-        finally:
-            try:connection.logout()
-            except Exception:pass
+        with activity.cancellable(lambda:self.cancel(connection)):
+            try:
+                name=base64.b64decode(folder);quoted=b'"'+name.replace(b'\\',b'\\\\').replace(b'"',b'\\"')+b'"'
+                status,_=connection.select(quoted,readonly=True)
+                if status!='OK':return None
+                _,current=connection.response('UIDVALIDITY')
+                if not current or not current[0] or current[0].decode()!=validity:return None
+                message=read_imap_message(connection,int(ident));message.update(remote_id=remote,folder_id=folder);return message
+            finally:
+                try:connection.logout()
+                except Exception:pass
 
 ADAPTERS={'gmail':Gmail,'graph':Graph,'imap':IMAP}
 def init(c):

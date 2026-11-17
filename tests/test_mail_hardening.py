@@ -107,8 +107,17 @@ class HardeningTests(unittest.TestCase):
             c.execute("UPDATE settings SET value=? WHERE key='mail_account'",(json.dumps({'id':'different'}),))
             with self.assertRaisesRegex(ValueError,'selected account'):mail.review(c,'one','approve',[self.a],app.save_job)
             jobs=pipeline.pending_for_jobs(c,[{'id':self.a}]);self.assertFalse(jobs[0]['pending_positive'])
+    def test_preview_free_inbox_still_searches_full_body_and_returns_full_detail(self):
+        m=self.message();m['body']='Header '+('padding '*180)+'unique_body_search_term'
+        self.collect([m])
+        with app.connect() as c:
+            result=mail.inbox(c,False,query='unique_body_search_term',options={'preview':'0'})
+            self.assertEqual(len(result['messages']),1);self.assertEqual(result['messages'][0]['body'],'')
+            self.assertEqual(result['messages'][0]['body_length'],len(m['body']))
+            self.assertEqual(mail.message_detail(c,m['message_id'])['body'],m['body'])
+            self.assertEqual(mail.inbox(c,False)['messages'][0]['body'],m['body'][:800])
     def test_default_classifier_uses_current_bundled_python_on_every_os(self):
-        with patch.object(mail.sys,'platform','linux'),patch.object(mail.subprocess,'run') as run:
+        with patch.object(mail.sys,'platform','linux'),patch.object(mail.activity,'run_process') as run:
             run.return_value.returncode=0;run.return_value.stdout='{"ok":true}';run.return_value.stderr=''
             self.assertEqual(mail.run_shortcut('JobTracker Email Review',{'mode':'selftest'}),{'ok':True})
             self.assertEqual(run.call_args.args[0][0],mail.sys.executable);self.assertTrue(run.call_args.args[0][-1].endswith('mail_shortcut.py'))

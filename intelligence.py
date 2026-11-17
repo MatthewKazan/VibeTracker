@@ -1,13 +1,38 @@
 """Local model lifecycle and explainable résumé comparisons."""
+import activity
+import http.client, socket
 import datetime, hashlib, json, os, re, shutil, subprocess, threading, time, urllib.request
 from collections import Counter
 from pathlib import Path
 START_LOCK=threading.Lock()
+USED_MODELS=set()
 SUGGESTIONS=[
  {'name':'qwen3.5:9b','size':'About 6.6–7.6 GB download','why':'Larger model: more detailed job extraction and résumé comparisons. Needs more memory.','url':'https://ollama.com/library/qwen3.5:9b'},
  {'name':'qwen3.5:4b','size':'About 3.3–4.0 GB download','why':'Lighter option for users with less available memory. Leave room for the app and model context.','url':'https://ollama.com/library/qwen3.5:4b'},
  {'name':'llama3.2:3b','size':'About 2.0 GB download','why':'Small fallback for basic extraction; review its detailed advice carefully.','url':'https://ollama.com/library/llama3.2'}]
 def call(route,body=None,timeout=8):
+ if route=='generate' and body is not None and body.get('keep_alive')!=0:
+  epoch=activity.ticket();USED_MODELS.add(body['model'])
+  connection=http.client.HTTPConnection('127.0.0.1',11434,timeout=timeout);sock=[None]
+  def cancel():
+   if sock[0]:
+    try:sock[0].shutdown(socket.SHUT_RDWR)
+    except OSError:pass
+   connection.close()
+  try:
+   with activity.cancellable(cancel,epoch):
+    connection.connect();sock[0]=connection.sock;activity.check(epoch)
+    connection.request('POST','/api/'+route,body=json.dumps(body),headers={'Content-Type':'application/json'})
+    response=connection.getresponse();data=json.load(response);activity.check(epoch)
+    if response.status>=400:
+     detail=str(data.get('error',response.status))
+     if 'memory' in detail.lower():raise ValueError('Ollama ran out of memory. Close other applications or select a smaller model in Local AI.')
+     if response.status==404:raise ValueError('The selected model is missing. Open Local AI, refresh models, and select an installed model.')
+     raise ValueError('Ollama could not complete this request. Update Ollama or try another model. Details: '+detail[:200])
+    return data
+  except Exception:
+   activity.check(epoch);raise
+  finally:connection.close()
  req=urllib.request.Request('http://127.0.0.1:11434/api/'+route,data=json.dumps(body).encode() if body is not None else None,headers={'Content-Type':'application/json'})
  try:
   with urllib.request.urlopen(req,timeout=timeout) as r:return json.load(r)
@@ -18,6 +43,23 @@ def call(route,body=None,timeout=8):
   if 'memory' in detail.lower():raise ValueError('Ollama ran out of memory. Close other applications or select a smaller model in Local AI.') from e
   if e.code==404:raise ValueError('The selected model is missing. Open Local AI, refresh models, and select an installed model.') from e
   raise ValueError('Ollama could not complete this request. Update Ollama or try another model. Details: '+detail[:200]) from e
+def unload_models(models):
+ """Unload only selected/used JobTracker models that are actually resident."""
+ if not models:return []
+ try:loaded=call('ps',timeout=3).get('models',[])
+ except urllib.error.URLError as exc:
+  if isinstance(exc.reason,ConnectionRefusedError):return []
+  return [str(exc)]
+ except Exception as exc:return [str(exc)]
+ normalize=lambda name:name if ':' in name else name+':latest'
+ owned={normalize(name) for name in models};errors=[]
+ for item in loaded:
+  name=item.get('name','')
+  if normalize(name) not in owned:continue
+  try:call('generate',{'model':name,'stream':False,'keep_alive':0},timeout=10)
+  except Exception as exc:errors.append(str(exc))
+ return errors
+
 def binary():
  return shutil.which('ollama') or next((p for p in ['/usr/local/bin/ollama','/opt/homebrew/bin/ollama','/Applications/Ollama.app/Contents/Resources/ollama',str(Path(os.environ.get('LOCALAPPDATA',''))/'Programs/Ollama/ollama.exe'),str(Path(os.environ.get('PROGRAMFILES','C:/Program Files'))/'Ollama/ollama.exe')] if Path(p).is_file()),None)
 def discover():
@@ -34,6 +76,7 @@ def discover():
  except Exception:result['message']='Ollama is installed but stopped.' if result['installed'] else 'Install Ollama to use local AI.'
  return result
 def ensure_server(log_path):
+ activity.check()
  with START_LOCK:
   status=discover()
   if status['connected']:return status
@@ -43,9 +86,14 @@ def ensure_server(log_path):
   import os
   with open(log_path,'ab') as log:
    process=subprocess.Popen([exe,'serve'],stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0,env={**os.environ,'OLLAMA_HOST':'127.0.0.1:11434'})
-  for _ in range(40):
-   time.sleep(.25); status=discover()
-   if status['connected']:return status
+  try:
+   with activity.cancellable(process.terminate):
+    for _ in range(40):
+     activity.STOP.wait(.25);activity.check();status=discover();activity.check()
+     if status['connected']:return status
+  except BaseException:
+   if process.poll() is None:process.terminate()
+   raise
   if process.poll() is None:process.terminate()
   raise ValueError('Ollama did not start. Check data/ollama.log or open the Ollama app and retry.')
 def validate_model(model):
@@ -54,7 +102,11 @@ def validate_model(model):
  info=call('show',{'model':model})
  if info.get('remote_host') or 'completion' not in info.get('capabilities',['completion']):raise ValueError('Choose a local text-generation model, not an embedding or cloud model.')
 def generate(model,prompt,system,num_predict=3600):
- validate_model(model)
+ activity.check()
+ validated=getattr(LOCAL,'validated_models',None)
+ if validated is None or model not in validated:
+  validate_model(model)
+  if validated is not None:validated.add(model)
  data=call('generate',{'model':model,'prompt':prompt,'system':system,'stream':False,'format':'json','think':False,'keep_alive':'10m','options':{'temperature':0,'seed':0,'num_predict':num_predict,'num_ctx':16384}},timeout=180)
  if not data.get('done'):raise ValueError('Model did not finish; try a smaller model.')
  try:result=json.loads(data['response'])
@@ -75,8 +127,8 @@ def coverage(description,resume):
  terms=sorted(terms,key=lambda t:(-counts.get(t,2),t))[:60]
  matched=[t for t in terms if contains(resume,t)];missing=[t for t in terms if not contains(resume,t)]
  excerpts=[]
+ lines=re.split(r'(?<=[.!?])\s+|\n',description)
  for term in missing:
-  lines=re.split(r'(?<=[.!?])\s+|\n',description)
   quote=next((x.strip() for x in lines if contains(x,term)),description)[:500]
   excerpts.append({'term':term,'job_evidence':quote,'advice':f'If you have used {term}, name it in a specific project or accomplishment. Otherwise treat it as a gap to discuss or learn—not a skill to claim.'})
  return {'score':round(100*len(matched)/len(terms)) if terms else None,'matched':matched,'missing':excerpts,'total':len(terms),'message':'Keyword coverage, not an employer ATS score. Missing wording does not prove missing experience.'}
@@ -177,7 +229,7 @@ def ask(model,prompt,system,validate,num_predict):
  # Temperature 0 makes an identical retry pointless, so the retry carries the failure reason.
  err=None
  for _ in range(2):
-  if (getattr(LOCAL,'should_stop',None) or (lambda:False))():raise Cancelled()
+  if activity.paused() or (getattr(LOCAL,'should_stop',None) or (lambda:False))():raise Cancelled()
   try:r=generate(model,prompt if not err else prompt+'\nYour previous answer was invalid: '+err+'. Answer again.',system,num_predict)
   except ValueError as e:err=str(e)[:200];continue
   err=validate(r)
@@ -242,6 +294,13 @@ def judge(it,sents,lines,facts,prefix,model,system,shortcut):
  label='unclear' if level is None else {4:'supported',3:'partial',2:'partial',1:'gap',0:'gap' if contradicted else 'unclear'}[level]
  return {'requirement':req,'assessment':label,'job_evidence':sents[it['sent']-1][:1200],'resume_evidence':rl[0]['text'][:1200] if rl else '','resume_lines':rl,'profile_evidence':fact,'suggestion':suggestion[:1800],'importance':'required' if it['importance']=='required' else 'preferred','kind':it['kind'],'level':level,'have':info['have'],'missing':info['missing'],'to_close':info['to_close'],'contradicted':contradicted,'keywords':[],'evidence_verified':bool(ev),'group':it['group'],'raw_importance':it['importance']}
 def analyze(description,resume,model,memory="",conversation=None,system=None,instructions=None,today=None,shortcut=True):
+ # Validate the same local model once per review, instead of tags/show requests for every requirement.
+ previous=getattr(LOCAL,'validated_models',None)
+ LOCAL.validated_models=set()
+ try:return _analyze(description,resume,model,memory,conversation,system,instructions,today,shortcut)
+ finally:LOCAL.validated_models=previous
+
+def _analyze(description,resume,model,memory="",conversation=None,system=None,instructions=None,today=None,shortcut=True):
  today=today or datetime.date.today();current_date=today.isoformat()
  system=(system or '').strip() or DEFAULT_SYSTEM
  instructions=(instructions or '').strip() or DEFAULT_INSTRUCTIONS

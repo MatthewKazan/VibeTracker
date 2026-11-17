@@ -1,4 +1,5 @@
 """Company-indexed collection, independent classification, and durable email review state."""
+import activity as background
 import datetime as dt
 import hashlib
 import html
@@ -230,6 +231,7 @@ def collect(c,messages,jobs,account_id):
     return added
 
 def sync(app,generation=None):
+    if background.paused():return
     if not mail.SYNC_LOCK.acquire(blocking=False):return
     if generation is not None and generation!=mail.SCAN_GENERATION:
         mail.SYNC_LOCK.release();return
@@ -289,6 +291,7 @@ def classify_one(c,message,result):
     auto_ignore(c);touch(c)
 
 def analyze_pending(app,limit=3):
+    if background.paused():return 0
     if not CLASSIFY_LOCK.acquire(blocking=False):return 0
     completed=0
     try:
@@ -302,14 +305,17 @@ def analyze_pending(app,limit=3):
         # Independently commit each result: one failed message never blocks another.
         for message in messages:
             try:
+                epoch=background.ticket()
                 if config.get('mail_use_shortcut',True):
                     with app.priority():result=mail.run_shortcut(config.get('mail_shortcut','JobTracker Email Review'),{'mode':'classify','type_only':True,'model':config.get('model',''),'classifier_prompt':prompt,'email':{k:message[k] for k in ('message_id','sender','subject','body','company','received_at')}})
                 else:
                     rejection=mail.REJECTION.search(message['subject']+'\n'+message['body']);invite=mail.invitation_evidence(message)
                     result={'kind':'rejection' if rejection else 'interview' if invite else 'confirmation' if mail.confirmation_evidence(message) else 'other','evidence':rejection.group(0) if rejection else invite}
                 if not isinstance(result,dict):raise ValueError('The classifier returned an unreadable result.')
+                background.check(epoch)
                 with app.LOCK,app.connect() as c:classify_one(c,message,result)
                 completed+=1
+            except background.Paused:break
             except Exception as exc:
                 with app.LOCK,app.connect() as c:
                     c.execute("UPDATE emails SET analysis_state='failed',analysis_error=? WHERE message_id=? AND body_version=? AND review NOT IN ('approved','dismissed','ignored')",(str(exc),message['message_id'],message.get('body_version',0)));touch(c)
@@ -319,9 +325,10 @@ def analyze_pending(app,limit=3):
 
 def analysis_worker(app):
     while True:
+        background.wait()
         try:count=analyze_pending(app)
         except Exception as exc:ANALYSIS['error']=str(exc);count=0
-        time.sleep(1 if count else 3)
+        background.wait(1 if count else 3)
 
 def record_approval(c,message_id,ids):
     email=c.execute('SELECT * FROM emails WHERE message_id=?',(message_id,)).fetchone()
@@ -413,6 +420,8 @@ class Links(HTMLParser):
             if href.startswith('https://'):self.urls.append(html.unescape(href))
 
 def lookup_missing(app,ident):
+    if background.paused():return
+    epoch=background.ticket()
     with app.connect() as c:
         row=c.execute('SELECT * FROM email_missing WHERE id=?',(ident,)).fetchone()
         if not row:return
@@ -425,6 +434,7 @@ def lookup_missing(app,ident):
         except Exception:pass
         tried=set()
         for url in urls:
+            background.check(epoch)
             if len(tried)>=4:break
             url=public_posting_url(url)
             if not url:continue
@@ -435,24 +445,32 @@ def lookup_missing(app,ident):
                 if not posting.get('title') or mail.normalized(suggestion['title']) not in mail.normalized(posting['title']):continue
                 company=posting.get('company','')
                 if not company or company_key(company)!=company_key(suggestion['company']):continue
+                background.check(epoch)
                 with app.LOCK,app.connect() as c:
                     c.execute("UPDATE email_missing SET url=?,description=?,lookup_state='found',error='' WHERE id=?",(url,posting.get('description',''),ident));touch(c)
                 return
             except Exception:continue
+        background.check(epoch)
         with app.connect() as c:c.execute("UPDATE email_missing SET url='',description='',lookup_state='not_found',error='No verified public posting found. You can still review and add the role from the email.' WHERE id=?",(ident,));touch(c)
+    except background.Paused:
+        with app.connect() as c:c.execute("UPDATE email_missing SET lookup_state='queued',error='' WHERE id=?",(ident,));touch(c)
     except Exception as exc:
         with app.connect() as c:c.execute("UPDATE email_missing SET lookup_state='failed',error=? WHERE id=?",(str(exc),ident));touch(c)
 
 def lookup_worker(app):
     with app.connect() as c:c.execute("UPDATE email_missing SET lookup_state='queued' WHERE lookup_state='searching'")
     while True:
+        background.wait()
         try:
             with app.connect() as c:
                 account=mail.get_setting(c,'mail_account') or {}
                 row=c.execute("SELECT DISTINCT s.id FROM email_missing s JOIN email_missing_messages m ON m.suggestion_id=s.id JOIN email_accounts a ON a.message_id=m.message_id WHERE a.account_id=? AND s.lookup_state='queued' AND s.state='suggested' ORDER BY s.id LIMIT 1",(account.get('id',''),)).fetchone()
             if row:lookup_missing(app,row['id'])
+            with app.connect() as c:
+                feedback=c.execute("SELECT message_id FROM email_feedback WHERE state='queued' LIMIT 1").fetchone()
+            if feedback:mail.analyze_feedback(app,feedback[0])
         except Exception:pass
-        time.sleep(3)
+        background.wait(3)
 
 def restore(c,data,job_map):
     for a in data.get('approvals',[]):

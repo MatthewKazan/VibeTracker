@@ -11,7 +11,7 @@ const smoke=process.env.WAYPOINT_SMOKE==='1';
 app.setPath('userData',(smoke||process.env.WAYPOINT_UI_TEST==='1')?path.join(require('node:os').tmpdir(),'jobtracker-smoke-'+process.pid,'Waypoint'):path.join(app.getPath('appData'),'Waypoint'));
 // GUI apps have no visible console on Windows, so smoke results go to a file.
 function smokeResult(text){if(process.env.WAYPOINT_SMOKE_RESULT)fs.writeFileSync(process.env.WAYPOINT_SMOKE_RESULT,text);}
-let notificationStop,mailAccountsStop,mainSecret;
+let notificationStop,mailAccountsStop,mainSecret,lowResource=false,startupTimer,startupPending=true,activityBusy=false;
 let server,win,origin,quitting=false,quitPending=false,wipeOnQuit=false,secret,logStream;
 const gotLock=app.requestSingleInstanceLock();
 if(!gotLock){app.quit();}else{
@@ -35,6 +35,7 @@ async function start(){
  });
  const health=await localRequest(origin+'/api/state',{headers:{'X-Waypoint-Session':secret},timeout:10000});
  if(!health.ok)throw Error('The app and data engine could not authenticate (HTTP '+health.status+'). Install the latest JobTracker build. Your data is unchanged.');
+ const initialState=await health.json();lowResource=initialState.settings.low_resource_mode===true;
  session.defaultSession.setPermissionRequestHandler((_wc,permission,callback)=>callback(permission==='clipboard-sanitized-write'));
  session.defaultSession.webRequest.onBeforeSendHeaders({urls:[origin+'/*']},(details,callback)=>callback({requestHeaders:{...details.requestHeaders,'X-Waypoint-Session':secret}}));
  const bounds=savedBounds();
@@ -52,10 +53,20 @@ async function start(){
  let saveTimer;const writeBounds=()=>{clearTimeout(saveTimer);try{fs.writeFileSync(windowStateFile(),JSON.stringify({...win.getNormalBounds(),maximized:win.isMaximized()}));}catch{}};
  for(const e of ['resize','move','maximize','unmaximize'])win.on(e,()=>{clearTimeout(saveTimer);saveTimer=setTimeout(writeBounds,400);});
  win.on('close',writeBounds);
- mailAccountsStop=startMailAccounts({ipcMain,safeStorage,userData:app.getPath('userData'),win,origin,request:(route,body)=>backendRequest(route,body,true),openExternal:url=>shell.openExternal(url)});
+ mailAccountsStop=startMailAccounts({paused:true,ipcMain,safeStorage,userData:app.getPath('userData'),win,origin,request:(route,body)=>backendRequest(route,body,true),openExternal:url=>shell.openExternal(url)});
+ ipcMain.handle('activity:set',async(event,paused)=>{
+  if(event.sender!==win.webContents||new URL(event.senderFrame?.url||'about:blank').origin!==origin||typeof paused!=='boolean')throw Error('Invalid activity request.');
+  if(activityBusy)throw Error('Background activity is already changing. Wait a moment.');activityBusy=true;
+  try{
+   if(paused){lowResource=true;notificationStop?.();notificationStop=null;mailAccountsStop?.setPaused?.(true);}
+   const result=await backendRequest('activity',{paused});lowResource=result.paused;return result;
+  }catch(error){try{lowResource=(await backendRequest('activity')).paused}catch{}throw error}
+  finally{activityBusy=false;mailAccountsStop?.setPaused?.(lowResource||startupPending);if(!lowResource&&!startupPending&&!smoke&&!notificationStop)startDesktopNotifications();}
+
+ });
  if(smoke){await backendRequest('settings',{auto_start:false,auto_analyze:false});await backendRequest('job',{title:'Synthetic startup test','company':'Synthetic QA','status':'Rejected',interviews_completed:2});}
  await win.loadURL(origin);win.show();
- if(!smoke)notificationStop=startNotifications({Notification,request:backendRequest,app,win,openEmail:id=>win.webContents.executeJavaScript('window.openEmailReview?.('+JSON.stringify(id)+')').catch(()=>{})});
+ startupTimer=setTimeout(()=>{startupPending=false;if(!lowResource){mailAccountsStop?.setPaused?.(false);if(!smoke&&!notificationStop)startDesktopNotifications();}},Math.max(0,initialState.activity.startup_remaining*1000));
  if(smoke){
   // Pass only if the backend answered and the interface actually rendered the application list.
   const rendered=await win.webContents.executeJavaScript("new Promise(resolve=>{const start=Date.now();function check(){const result={ready:!!document.querySelector('#navcount')&&document.querySelector('#rows')!==null&&typeof window.openEmailReview==='function'&&typeof state!=='undefined'&&!!state.token,review:typeof window.openEmailReview,stateReady:typeof state!=='undefined'&&!!state.token,error:document.querySelector('#errorText')?.textContent||''};if(result.ready||Date.now()-start>15000)resolve(result);else setTimeout(check,250)}check()})");
@@ -64,6 +75,8 @@ async function start(){
   if(!scannerControls)throw Error('Scanner pause controls, interval label or app version did not initialize.');
   const mailBridge=await win.webContents.executeJavaScript("window.jobtrackerMail.status().then(result=>typeof result.busy==='boolean')");
   if(!mailBridge)throw Error('The desktop mail connection bridge did not initialize.');
+  const resourceControls=await win.webContents.executeJavaScript("(async()=>{const input=document.querySelector('#resume');input.value='Unsaved synthetic smoke text';await changeActivity(true);const paused=backgroundPaused()&&document.querySelector('#activityToggle').getAttribute('aria-pressed')==='true'&&input.value==='Unsaved synthetic smoke text';await changeActivity(false);return paused&&!backgroundPaused()&&input.value==='Unsaved synthetic smoke text'})()");
+  if(!resourceControls)throw Error('Low-resource controls did not preserve unsaved text or resume correctly.');
   smokeResult('ok '+app.getVersion());setTimeout(()=>app.quit(),1000);
  }
 }
@@ -98,7 +111,7 @@ async function backendRequest(route,body,mainOnly=false){
 }
 app.on('before-quit',event=>{
  if(smoke){quitting=true;if(server)server.kill?.();app.exit(0);return;}
- if(quitting){if(mailAccountsStop)mailAccountsStop();if(notificationStop)notificationStop();if(server&&!server.killed)server.kill();if(logStream)logStream.end();return;}
+ if(quitting){clearTimeout(startupTimer);if(mailAccountsStop)mailAccountsStop();if(notificationStop)notificationStop();if(server&&!server.killed)server.kill();if(logStream)logStream.end();return;}
  event.preventDefault();if(quitPending)return;quitPending=true;
  (async()=>{
   try{
@@ -118,3 +131,5 @@ app.on('before-quit',event=>{
   quitting=true;app.quit();
  })().finally(()=>{quitPending=false;});
 });
+
+function startDesktopNotifications(){notificationStop=startNotifications({Notification,request:backendRequest,app,win,openEmail:id=>win.webContents.executeJavaScript('window.openEmailReview?.('+JSON.stringify(id)+')').catch(()=>{})});}

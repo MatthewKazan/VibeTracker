@@ -1,4 +1,5 @@
 """Persistent email links and reviewable rejection proposals. No remote services."""
+import activity
 import datetime as dt
 import json
 import re
@@ -267,7 +268,7 @@ def export(c):
 def inbox(c,include_body=True,query="",options=None):
     options=options or {}
     account=get_setting(c,'mail_account',None)
-    fields='e.*' if include_body else ','.join('substr(e.body,1,800) AS body' if r[1]=='body' else 'e.'+r[1] for r in c.execute('PRAGMA table_info(emails)'))
+    fields='e.*' if include_body else ','.join(("'' AS body" if options.get('preview')=='0' else 'substr(e.body,1,800) AS body') if r[1]=='body' else 'e.'+r[1] for r in c.execute('PRAGMA table_info(emails)'))
     fields+=',length(e.body) AS body_length'
     sql='SELECT '+fields+' FROM emails e';params=[];conditions=[]
     if account:sql+=' JOIN email_accounts a USING(message_id)';conditions.append('a.account_id=?');params.append(account['id'])
@@ -360,27 +361,27 @@ def sync(app,generation=None):
     return mail_pipeline.sync(app,generation)
 
 def start_sync(app):
+    activity.check()
     if SYNC['running']:return {'ok':True}
     if LAST_SCAN_FINISHED and time.monotonic()-LAST_SCAN_FINISHED<15:raise ValueError('Mail is resting between batches. Try again in a few seconds.')
     threading.Thread(target=sync,args=(app,SCAN_GENERATION),daemon=True).start()
     return {'ok':True}
 
 def automatic_due(app):
-    return app.settings().get('mail_enabled') is True and time.monotonic()-LAST_SCAN_FINISHED>=300
+    return not activity.paused() and app.settings().get('mail_enabled') is True and time.monotonic()-LAST_SCAN_FINISHED>=300
 
 def worker(app):
     import time,mail_pipeline
     threading.Thread(target=mail_pipeline.analysis_worker,args=(app,),daemon=True).start()
     threading.Thread(target=mail_pipeline.lookup_worker,args=(app,),daemon=True).start()
-    with app.connect() as c:
-        interrupted=[r[0] for r in c.execute("SELECT message_id FROM email_feedback WHERE state IN ('queued','running')")]
-    for message_id in interrupted:start_feedback(app,message_id)
+    with app.connect() as c:c.execute("UPDATE email_feedback SET state='queued' WHERE state='running'")
     while True:
+        activity.wait()
         try:
             generation=SCAN_GENERATION
             if automatic_due(app):sync(app,generation)
         except Exception as exc: SYNC['error']=str(exc)
-        time.sleep(60)
+        activity.wait(60)
 
 def restore(c, data, job_map):
     if not isinstance(data,dict) or any(not isinstance(data.get(k,[]),list) for k in ('messages','links','proposals','decisions','feedback','accounts')):
@@ -425,9 +426,10 @@ def get_prompt(c):
 
 def run_shortcut(name,payload):
     import tempfile
+    if payload.get('model'):__import__('intelligence').USED_MODELS.add(payload['model'])
     if name in ('','JobTracker Email Review'):
         helper=Path(__file__).with_name('mail_shortcut.py')
-        try:result=subprocess.run([sys.executable,'-B',str(helper)],input=json.dumps(payload),capture_output=True,text=True,timeout=240)
+        try:result=activity.run_process([sys.executable,'-B',str(helper)],input=json.dumps(payload),capture_output=True,text=True,timeout=240)
         except subprocess.TimeoutExpired:raise ValueError('The local email classifier timed out. Retry this email.') from None
         if result.returncode:raise ValueError('The local email classifier failed. '+result.stderr.strip()[:500])
         data=json.loads(result.stdout)
@@ -438,7 +440,7 @@ def run_shortcut(name,payload):
         source=Path(folder)/'input.json';target=Path(folder)/'output.json'
         source.write_text(json.dumps(payload),encoding='utf-8')
         try:
-            result=subprocess.run(['/usr/bin/shortcuts','run',name,'--input-path',str(source),'--output-path',str(target)],capture_output=True,text=True,timeout=240)
+            result=activity.run_process(['/usr/bin/shortcuts','run',name,'--input-path',str(source),'--output-path',str(target)],capture_output=True,text=True,timeout=240)
         except subprocess.TimeoutExpired:raise ValueError('The email review Shortcut timed out. Retry from the email review panel.') from None
         if result.returncode:raise ValueError('The email review Shortcut could not run. Open it in Shortcuts and check its permissions. '+result.stderr.strip()[:500])
         if not target.exists():raise ValueError('The email review Shortcut returned no JSON output.')
@@ -446,8 +448,11 @@ def run_shortcut(name,payload):
         if not isinstance(data,dict):raise ValueError('The email review Shortcut must return a JSON object.')
         return data
 
+FEEDBACK_LOCK=threading.Lock()
 def analyze_feedback(app,message_id):
+    if not FEEDBACK_LOCK.acquire(blocking=False):return
     try:
+        epoch=activity.ticket()
         with app.connect() as c:
             f=dict(c.execute('SELECT * FROM email_feedback WHERE message_id=?',(message_id,)).fetchone())
             m=dict(c.execute('SELECT * FROM emails WHERE message_id=?',(message_id,)).fetchone())
@@ -459,10 +464,15 @@ def analyze_feedback(app,message_id):
         proposal=output.get('proposed_prompt');explanation=output.get('explanation')
         if not isinstance(proposal,str) or not proposal.strip() or len(proposal)>16000 or not isinstance(explanation,str):raise ValueError('Shortcut returned an invalid prompt proposal.')
         with app.LOCK,app.connect() as c:c.execute("UPDATE email_feedback SET state='ready',proposal=?,explanation=?,error='' WHERE message_id=?",(proposal,explanation,message_id));__import__('mail_pipeline').touch(c)
+    except activity.Paused:
+        with app.connect() as c:c.execute("UPDATE email_feedback SET state='queued',error='' WHERE message_id=?",(message_id,))
     except Exception as exc:
         with app.connect() as c:c.execute("UPDATE email_feedback SET state='failed',error=? WHERE message_id=?",(str(exc),message_id));__import__('mail_pipeline').touch(c)
 
+    finally:FEEDBACK_LOCK.release()
+
 def start_feedback(app,message_id):
+    if activity.paused() or not activity.READY.is_set():return
     threading.Thread(target=analyze_feedback,args=(app,message_id),daemon=True).start()
 
 def apply_feedback(c,message_id):

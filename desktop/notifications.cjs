@@ -10,7 +10,7 @@ function startNotifications({Notification,request,app,win,openEmail,interval=500
   if(busy||stopped)return;busy=true;
   try{
    const summary=await request('emails/summary');app.setBadgeCount?.(summary.notification_badge===false?0:summary.pending||0);
-   const response=await request('emails/notifications'),events=response.events||[],presentation={sound:true,previews:true,attention:true,...response.presentation};
+   if(stopped)return;const response=await request('emails/notifications');if(stopped)return;const events=response.events||[],presentation={sound:true,previews:true,attention:true,...response.presentation};
    if(!events.length||!Notification?.isSupported?.()||Date.now()-lastAttempt<30000)return;
    lastAttempt=Date.now();
    for(const group of groupEvents(events)){

@@ -18,10 +18,10 @@ test('IPC rejects another window and remote renderer origin',async t=>{const {ha
 test('session-only credentials work without secret store and are not saved',async t=>{const {handlers,event}=controller(t,{secure:{isAsyncEncryptionAvailable:async()=>false}});const config={provider:'imap',host:'imap.test',email:'jobs@test',password:'private',remember:false};const result=await handlers['mail:connect'](event,config);assert.equal(result.stored,false);assert.match(result.warning,/session/);await assert.rejects(handlers['mail:connect'](event,{...config,remember:true}),/Secure storage/)});
 test('IPC credentials only reach private main-process route',async t=>{const calls=[];const {handlers,event}=controller(t,{request:async(...args)=>{calls.push(args);return {account:{id:'imap:test',addresses:['jobs@test']}}}});await handlers['mail:connect'](event,{provider:'imap',host:'imap.test',email:'jobs@test',password:'private'});assert.equal(calls[0][0],'mail/source/install');assert.equal(calls[0][1].config.password,'private');const status=await handlers['mail:status'](event);assert(!JSON.stringify(status).includes('private'));await handlers['mail:disconnect'](event,'imap:test');assert.equal(calls[1][0],'mail/source/disconnect')});
 test('preload exposes only mail methods and renders plain connection errors',async()=>{
- let bridge;const vm=require('node:vm');
- const electron={contextBridge:{exposeInMainWorld:(name,value)=>{assert.equal(name,'jobtrackerMail');bridge=value}},ipcRenderer:{invoke:async()=>{throw Error("Error invoking remote method 'mail:connect': Error: Enter a client ID.")}}};
+ let bridge,activity;const vm=require('node:vm');
+ const electron={contextBridge:{exposeInMainWorld:(name,value)=>{if(name==='jobtrackerMail')bridge=value;else{assert.equal(name,'jobtrackerActivity');activity=value}}},ipcRenderer:{invoke:async()=>{throw Error("Error invoking remote method 'mail:connect': Error: Enter a client ID.")}}};
  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'preload.cjs'),'utf8'),{require:()=>electron});
- assert.deepEqual(Object.keys(bridge),['status','connect','cancel','disconnect']);
+ assert.deepEqual(Object.keys(bridge),['status','connect','cancel','disconnect']);assert.deepEqual(Object.keys(activity),['setPaused']);
  await assert.rejects(bridge.connect({}),/^Error: Enter a client ID\.$/);
 });
 test('disconnect waits for an in-flight startup restore before forgetting credentials',async t=>{
@@ -34,4 +34,13 @@ test('fresh startup status does not initialize a potentially locked credential s
  let checks=0;const {handlers,event}=controller(t,{secure:{isAsyncEncryptionAvailable:()=>{checks++;return new Promise(()=>{})}}});
  const status=await handlers['mail:status'](event);assert.equal(status.secureStorage,null);assert.equal(status.busy,false);assert.equal(checks,0);
  await assert.rejects(handlers['mail:connect'](event,{provider:'gmail',remember:true}),/client ID/);assert.equal(checks,0);
+});
+
+test('paused mail accounts perform no restores or credential polling until resumed',async t=>{
+ const dir=tmp(t);await new Vault(path.join(dir,'mail-credentials.enc.json'),safe).put('imap:test',{provider:'imap',email:'jobs@test',password:'private'});
+ const calls=[],handlers={},webContents={};const stop=startMailAccounts({paused:true,ipcMain:{handle:(n,f)=>handlers[n]=f,removeHandler:n=>delete handlers[n]},safeStorage:safe,userData:dir,win:{webContents},origin:'http://127.0.0.1:8888',request:async route=>{calls.push(route);return {updates:{}}},openExternal(){},interval:5});t.after(stop);
+ await new Promise(r=>setTimeout(r,20));assert.deepEqual(calls,[]);
+ await assert.rejects(handlers['mail:connect']({sender:webContents,senderFrame:{url:'http://127.0.0.1:8888/'}},{}),/Resume/);
+ stop.setPaused(false);await new Promise(r=>setTimeout(r,25));assert(calls.includes('mail/source/install'));assert(calls.includes('mail/source/updates'));
+ stop.setPaused(true);const count=calls.length;await new Promise(r=>setTimeout(r,20));assert.equal(calls.length,count);
 });

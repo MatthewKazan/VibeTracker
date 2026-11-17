@@ -18,3 +18,9 @@ test('privacy, sound, attention and badge preferences reach desktop delivery',as
  for(let i=0;i<4;i++)await new Promise(r=>setImmediate(r));
  assert.equal(badge,0);assert.equal(shown[0].options.silent,true);assert(!shown[0].options.body.includes('Private'));assert.equal(flashes,0);assert.equal(bounces,0);assert(calls.some(([r])=>r==='emails/notifications/ack'));stop();
 });
+
+test('pausing during a pending notification read never displays or acknowledges it',async()=>{
+ let finish,shown=0;const calls=[];class Notification{static isSupported(){return true}constructor(){shown++}}
+ const pending=new Promise(r=>finish=r);const stop=startNotifications({Notification,request:async route=>{calls.push(route);if(route==='emails/notifications')return pending;return {}},app:{},win:{},interval:999999});
+ await new Promise(r=>setImmediate(r));stop();finish({events:[{id:1,message_id:'a',kind:'status:offer'}]});await new Promise(r=>setImmediate(r));assert.equal(shown,0);assert(!calls.includes('emails/notifications/ack'));
+});

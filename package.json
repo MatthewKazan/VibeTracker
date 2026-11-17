@@ -1,7 +1,7 @@
 {
   "name": "waypoint-job-manager",
-  "version": "1.8.1",
-  "description": "Private desktop job application tracker with local AI résumé insights",
+  "version": "1.13.0",
+  "description": "Private desktop job application tracker with local AI r\u00e9sum\u00e9 insights",
   "author": "Waypoint contributors",
   "license": "UNLICENSED",
   "private": true,
@@ -39,6 +39,10 @@
       "desktop/mail-accounts.cjs"
     ],
     "extraResources": [
+      {
+        "from": "activity.py",
+        "to": "backend/activity.py"
+      },
       {
         "from": "mail_scanner.py",
         "to": "backend/mail_scanner.py"
@@ -90,6 +94,10 @@
       {
         "from": "locations.py",
         "to": "backend/locations.py"
+      },
+      {
+        "from": "interview_prep.py",
+        "to": "backend/interview_prep.py"
       }
     ],
     "mac": {

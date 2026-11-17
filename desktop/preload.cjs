@@ -6,3 +6,5 @@ contextBridge.exposeInMainWorld('jobtrackerMail',Object.freeze({
  cancel:()=>invoke('mail:cancel'),
  disconnect:id=>invoke('mail:disconnect',id)
 }));
+
+contextBridge.exposeInMainWorld('jobtrackerActivity',Object.freeze({setPaused:paused=>invoke('activity:set',paused)}));
