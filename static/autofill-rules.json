@@ -1,0 +1,70 @@
+[
+  {
+    "name": "Google Careers job detail",
+    "host": "www.google.com",
+    "path_prefix": "/about/careers/applications/jobs/results/",
+    "scope": ".DkhPwc",
+    "fields": {
+      "title": [
+        {
+          "selector": "h2.p1N2lc"
+        }
+      ],
+      "company": [
+        {
+          "selector": ".RP7SMd span"
+        }
+      ],
+      "location": [
+        {
+          "selector": ".r0wTof"
+        }
+      ],
+      "description": [
+        {
+          "selector": ".KwJkGe"
+        },
+        {
+          "selector": ".aG5W3"
+        },
+        {
+          "selector": ".BDNOWe"
+        }
+      ]
+    }
+  },
+  {
+    "name": "Google Careers legacy URL",
+    "host": "careers.google.com",
+    "path_prefix": "/jobs/results/",
+    "scope": ".DkhPwc",
+    "fields": {
+      "title": [
+        {
+          "selector": "h2.p1N2lc"
+        }
+      ],
+      "company": [
+        {
+          "selector": ".RP7SMd span"
+        }
+      ],
+      "location": [
+        {
+          "selector": ".r0wTof"
+        }
+      ],
+      "description": [
+        {
+          "selector": ".KwJkGe"
+        },
+        {
+          "selector": ".aG5W3"
+        },
+        {
+          "selector": ".BDNOWe"
+        }
+      ]
+    }
+  }
+]

@@ -1,6 +1,6 @@
 {
   "name": "waypoint-job-manager",
-  "version": "1.13.1",
+  "version": "1.14.0",
   "description": "Private desktop job application tracker with local AI r\u00e9sum\u00e9 insights",
   "author": "Waypoint contributors",
   "license": "UNLICENSED",
@@ -98,6 +98,10 @@
       {
         "from": "interview_prep.py",
         "to": "backend/interview_prep.py"
+      },
+      {
+        "from": "posting_extraction.py",
+        "to": "backend/posting_extraction.py"
       }
     ],
     "mac": {
