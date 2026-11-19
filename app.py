@@ -13,7 +13,11 @@ import hashlib
 import calendar, contextlib, time
 import csv, datetime as dt, html, io, json, os, re, secrets, shutil, socket, sqlite3, threading, urllib.request, urllib.parse, ipaddress, zipfile
 from pathlib import Path
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer as BaseThreadingHTTPServer, BaseHTTPRequestHandler
+
+class ThreadingHTTPServer(BaseThreadingHTTPServer):
+ request_queue_size=128
+
 from xml.etree import ElementTree as ET
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('JOB_MANAGER_DATA', ROOT/'data')); DATA.mkdir(parents=True,exist_ok=True)
@@ -121,6 +125,25 @@ def draft_progress(ident,update=None):
    if ident not in DRAFT_PROGRESS and len(DRAFT_PROGRESS)>=128:del DRAFT_PROGRESS[min(DRAFT_PROGRESS,key=lambda k:DRAFT_PROGRESS[k]['updated'])]
    DRAFT_PROGRESS[ident]={**update,'updated':now}
   return {k:v for k,v in DRAFT_PROGRESS.get(ident,{'stage':'waiting'}).items() if k!='updated'}
+
+LEARN_PROPOSALS={};LEARN_LOCK=threading.Lock()
+def learned_summary(rule):
+ return {'id':rule['id'],'scope':rule['host']+rule.get('path_prefix',rule.get('path_exact','/')),'fields':list(rule['fields'])}
+def prepare_learning(url,corrections):
+ previous=getattr(POSTING_LOCAL,'manual',False);POSTING_LOCAL.manual=True
+ try:raw=fetch(url)
+ finally:POSTING_LOCAL.manual=previous
+ result=posting.learn(raw,url,corrections)
+ if result['rule']['fields']:
+  token=secrets.token_hex(16)
+  with LEARN_LOCK:
+   now=time.monotonic()
+   for key in list(LEARN_PROPOSALS):
+    if now-LEARN_PROPOSALS[key]['time']>600:del LEARN_PROPOSALS[key]
+   if len(LEARN_PROPOSALS)>=32:del LEARN_PROPOSALS[min(LEARN_PROPOSALS,key=lambda k:LEARN_PROPOSALS[k]['time'])]
+   LEARN_PROPOSALS[token]={'time':now,'rule':result['rule']}
+  result['token']=token
+ return {k:v for k,v in result.items() if k!='rule'}
 
 def fit_fingerprint(description,config):
  return hashlib.sha256(json.dumps([description,config.get('resume',''),config.get('model'),config.get('profile_memory',''),config.get('analysis_system',''),config.get('analysis_instructions',''),dt.date.today().strftime('%Y-%m'),'semantic-v6']).encode()).hexdigest()
@@ -240,6 +263,8 @@ def _extract(url,text='',rules=None,use_ai=True):
   for key,value in resolved.items():
    if value and (not selected or not job.get(key)):job[key]=value
  job.update(rule_job)
+ learned,learned_fields=posting.apply_learned(tree,url,config.get('autofill_learned_rules',[]))
+ job.update(learned)
  if not job.get('location') and len(candidates)<=1:job['location']=posting.semantic_location(tree)
  if not selected and len(job.get('title',''))>180:job['title']=''
  if use_ai and not activity.paused() and config.get('model') and any(not job.get(k) for k in ('title','company','location')):
@@ -253,7 +278,7 @@ def _extract(url,text='',rules=None,use_ai=True):
  job['location'],resolved,uncertain=location_tools.normalize(job.get('location',''),job.get('description',''),fetch)
  if uncertain:job['warning']=(job.get('warning','')+' Location needs review: the state could not be resolved reliably. You can edit it before saving.').strip()
  job.update(url=url,date_applied=dt.date.today().isoformat(),fit=fit_score(job.get('description','')))
- job['source']=('Site rule: '+rule_name if rule_name else 'Structured job posting' if selected else 'Page text — review extracted fields')+(' · city/state suggested by geographic lookup; review before saving' if resolved else '')
+ job['source']=('Learned '+', '.join(learned_fields) if learned_fields else 'Site rule: '+rule_name if rule_name else 'Structured job posting' if selected else 'Page text — review extracted fields')+(' · city/state suggested by geographic lookup; review before saving' if resolved else '')
  return job
 
 def parse_sheet(content,name):
@@ -394,10 +419,11 @@ def background_worker():
   except Exception:pass  # the worker must never die
 
 class Handler(BaseHTTPRequestHandler):
+ protocol_version="HTTP/1.1"
  def log_message(self,*args): pass
  def reply(self,data,status=200,ctype='application/json'):
   b=json.dumps(data).encode() if ctype=='application/json' else data.encode() if isinstance(data,str) else data
-  self.send_response(status); self.send_header('Content-Type',ctype); self.send_header('Content-Length',str(len(b))); self.send_header('X-Content-Type-Options','nosniff'); self.end_headers(); self.wfile.write(b)
+  self.send_response(status); self.send_header('Content-Type',ctype); self.send_header('Content-Length',str(len(b))); self.send_header('X-Content-Type-Options','nosniff'); self.send_header('Cache-Control','no-store'); self.end_headers(); self.wfile.write(b)
  def do_GET(self):
   if DESKTOP_TOKEN and self.headers.get('X-Waypoint-Session')!=DESKTOP_TOKEN:return self.reply({'error':'Unauthorized'},403)
   if self.headers.get('Host','').split(':')[0] not in ('127.0.0.1','localhost'): return self.reply({'error':'Invalid host'},403)
@@ -431,7 +457,7 @@ class Handler(BaseHTTPRequestHandler):
    except (ValueError,TypeError) as e:return self.reply({'error':str(e)},400)
   if path=='/api/interview-prep':
    with connect() as c:return self.reply({'sheets':interview_prep.read(c)})
-  if path=='/api/extraction-rules':return self.reply({'rules':settings().get('extraction_rules',posting.defaults()),'defaults':posting.defaults()})
+  if path=='/api/extraction-rules':return self.reply({'rules':settings().get('extraction_rules',posting.defaults()),'defaults':posting.defaults(),'learned':[learned_summary(r) for r in settings().get('autofill_learned_rules',[])]})
   if path=='/api/activity':return self.reply(activity.result())
   if path=='/api/ollama': return self.reply(ai.discover())
   if path=='/api/state':
@@ -466,7 +492,7 @@ class Handler(BaseHTTPRequestHandler):
    return self.reply('\ufeff'+s.getvalue(),ctype='text/csv; charset=utf-8')
   p=ROOT/'static'/('index.html' if path=='/' else path.lstrip('/'))
   if (ROOT/'static').resolve() not in p.resolve().parents or not p.is_file(): return self.reply({'error':'Not found'},404)
-  self.reply(p.read_bytes(),ctype={'.html':'text/html','.js':'text/javascript','.css':'text/css','.png':'image/png','.svg':'image/svg+xml'}.get(p.suffix,'text/plain'))
+  self.reply(p.read_bytes(),ctype={'.html':'text/html','.js':'text/javascript','.css':'text/css','.png':'image/png','.svg':'image/svg+xml','.woff2':'font/woff2','.woff':'font/woff','.ttf':'font/ttf'}.get(p.suffix,'text/plain'))
  def do_POST(self):
   if DESKTOP_TOKEN and self.headers.get('X-Waypoint-Session')!=DESKTOP_TOKEN:return self.reply({'error':'Unauthorized'},403)
   if self.headers.get('X-Token')!=TOKEN: return self.reply({'error':'Refresh the app and try again'},403)
@@ -614,6 +640,9 @@ class Handler(BaseHTTPRequestHandler):
      if route=='/api/settings':raise ValueError('Use the Interview prep editor or API to update sheets safely.')
      interview_prep.validate(cfg[interview_prep.KEY])
     if 'extraction_rules' in cfg:posting.validate(cfg['extraction_rules'])
+    if 'autofill_learned_rules' in cfg:
+     if route=='/api/settings':raise ValueError('Use Improve Autofill to save learned positions.')
+     posting.validate_learned(cfg['autofill_learned_rules'])
     if 'notification_preferences' in cfg:__import__('mail_notifications').validate(cfg['notification_preferences'])
     if 'question_groups' in cfg and (not isinstance(cfg['question_groups'],list) or len(cfg['question_groups'])>100 or any(not isinstance(g,str) or not g.strip() or len(g)>100 for g in cfg['question_groups']) or len(set(cfg['question_groups']))!=len(cfg['question_groups'])):raise ValueError('Use unique group names, up to 100 characters.')
     if 'questions' in cfg:
@@ -677,6 +706,24 @@ class Handler(BaseHTTPRequestHandler):
     ids=j.get('ids')
     if not isinstance(ids,list) or len(ids)>10000 or any(type(i) is not int for i in ids):raise ValueError('Invalid queue')
     QUEUE['ids']=ids
+    return self.reply({'ok':True})
+   if route=='/api/autofill/learn':return self.reply(prepare_learning(j.get('url',''),j.get('corrections')))
+   if route=='/api/autofill/learn/save':
+    with LEARN_LOCK:
+     proposal=LEARN_PROPOSALS.pop(j.get('token',''),None)
+    if not proposal or time.monotonic()-proposal['time']>600:raise ValueError('This improvement expired. Click Improve Autofill again.')
+    rule={**proposal['rule'],'id':secrets.token_hex(12),'created_at':dt.datetime.now(dt.timezone.utc).isoformat()}
+    with LOCK:
+     rules=settings().get('autofill_learned_rules',[])+[rule];posting.validate_learned(rules)
+     backup()
+     with connect() as c:c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',('autofill_learned_rules',json.dumps(rules)))
+    return self.reply(learned_summary(rule))
+   if route=='/api/autofill/learn/undo':
+    with LOCK:
+     rules=settings().get('autofill_learned_rules',[]);remaining=[r for r in rules if r['id']!=j.get('id')]
+     if len(remaining)==len(rules):raise ValueError('That improvement has already been removed.')
+     backup()
+     with connect() as c:c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',('autofill_learned_rules',json.dumps(remaining)))
     return self.reply({'ok':True})
    if route=='/api/extraction-rules/preview':
     rules=posting.validate(j.get('rules'))
@@ -799,7 +846,7 @@ class Handler(BaseHTTPRequestHandler):
        if 'emails' in j:mail_tools.restore(c,j['emails'],job_map)
        for k,v in j.get('settings',{}).items():
         if k==interview_prep.KEY:interview_prep.restore(c,v)
-        elif k in ('extraction_rules','notification_preferences','mail_prompt','mail_shortcut','mail_use_shortcut','resume','model','auto_start','profile_memory','quit_model_policy','sort_rules','status_order','status_colors','analysis_system','analysis_instructions','auto_analyze','sidebar_collapsed','questions','question_groups') or k.startswith('discussion_'): c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(k,json.dumps(v)))
+        elif k in ('autofill_learned_rules','extraction_rules','notification_preferences','mail_prompt','mail_shortcut','mail_use_shortcut','resume','model','auto_start','profile_memory','quit_model_policy','sort_rules','status_order','status_colors','analysis_system','analysis_instructions','auto_analyze','sidebar_collapsed','questions','question_groups') or k.startswith('discussion_'): c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(k,json.dumps(v)))
       result={'count':count,'skipped':skipped}
      elif route=='/api/backup': result={'ok':True}
      else: raise ValueError('Unknown action')

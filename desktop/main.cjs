@@ -65,6 +65,7 @@ async function start(){
 
  });
  if(smoke){await backendRequest('settings',{auto_start:false,auto_analyze:false});await backendRequest('job',{title:'Synthetic startup test','company':'Synthetic QA','status':'Rejected',interviews_completed:2});}
+ if(smoke){win.webContents.on('console-message',e=>console.error('Renderer:',e.message));session.defaultSession.webRequest.onErrorOccurred(d=>console.error('Asset:',new URL(d.url).pathname,d.error));}
  await win.loadURL(origin);win.show();
  startupTimer=setTimeout(()=>{startupPending=false;if(!lowResource){mailAccountsStop?.setPaused?.(false);if(!smoke&&!notificationStop)startDesktopNotifications();}},Math.max(0,initialState.activity.startup_remaining*1000));
  if(smoke){
@@ -77,6 +78,8 @@ async function start(){
   if(!mailBridge)throw Error('The desktop mail connection bridge did not initialize.');
   const resourceControls=await win.webContents.executeJavaScript("(async()=>{const input=document.querySelector('#resume');input.value='Unsaved synthetic smoke text';await changeActivity(true);const paused=backgroundPaused()&&document.querySelector('#activityToggle').getAttribute('aria-pressed')==='true'&&input.value==='Unsaved synthetic smoke text';await changeActivity(false);return paused&&!backgroundPaused()&&input.value==='Unsaved synthetic smoke text'})()");
   if(!resourceControls)throw Error('Low-resource controls did not preserve unsaved text or resume correctly.');
+  const sections=await win.webContents.executeJavaScript(`(async()=>{let ok=true;for(const view of ['interviewPrep','questions','emails']){await document.querySelector('nav [data-view="'+view+'"]').onclick();ok=ok&&(view==='interviewPrep'?prep.sheets.length>0:view==='questions'?document.querySelector('#qaList').children.length>0:document.querySelector('#emailCount').textContent.includes('total'));}await document.querySelector('nav [data-view="applications"]').onclick();return ok})()`);
+  if(!sections)throw Error('Interview prep, Q&A or Emails failed to render.');
   smokeResult('ok '+app.getVersion());setTimeout(()=>app.quit(),1000);
  }
 }

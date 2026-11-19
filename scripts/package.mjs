@@ -3,3 +3,6 @@ const [platform,arch]=process.argv.slice(2);if(!['mac','win','linux'].includes(p
 execFileSync(process.execPath,['scripts/runtime.mjs',`${platform}-${arch}`],{stdio:'inherit'});
 execFileSync(process.execPath,['scripts/icons.mjs'],{stdio:'inherit'});
 execFileSync(process.execPath,['node_modules/electron-builder/out/cli/cli.js',`--${platform}`,`--${arch}`,'--publish','never',`-c.electronDownload.cache=${path.resolve('work/electron-cache')}`],{stdio:'inherit',env:{...process.env,CSC_IDENTITY_AUTO_DISCOVERY:'false'}});
+
+// Prune obsolete installers only after a successful macOS build.
+if(platform==='mac')execFileSync(process.execPath,['scripts/clean-builds.mjs'],{stdio:'inherit'});

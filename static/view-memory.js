@@ -21,3 +21,11 @@ function sameViewData(a,b){
  if(!a||!b||typeof a!=='object'||typeof b!=='object'||Array.isArray(a)!==Array.isArray(b))return false;
  const keys=Object.keys(a);return keys.length===Object.keys(b).length&&keys.every(k=>Object.prototype.hasOwnProperty.call(b,k)&&sameViewData(a[k],b[k]));
 }
+
+// Retry a section whose initial script request failed, without reloading drafts.
+async function ensureSectionScript(view){
+ const sections={interviewPrep:['/interview-prep.js',()=>typeof loadPrep==='function'],questions:['/questions.js',()=>typeof renderQuestions==='function'],emails:['/emails.js',()=>typeof loadEmails==='function']};
+ const section=sections[view];if(!section||section[1]())return;
+ await loadViewAsset(section[0]);
+ if(!section[1]()){viewAssets.delete(section[0]);throw Error('Section script did not initialize.');}
+}

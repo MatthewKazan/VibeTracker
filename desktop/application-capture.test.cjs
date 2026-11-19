@@ -3,7 +3,7 @@ const source=fs.readFileSync(require.resolve('../static/app.js'),'utf8');
 function harness(){
  const nodes=new Map(),calls=[];const $=id=>{if(!nodes.has(id))nodes.set(id,{hidden:true,textContent:'',innerHTML:'',open:true,setAttribute(k,v){this[k]=v},removeAttribute(k){delete this[k]}});return nodes.get(id)};
  $('#jobForm').elements=Object.fromEntries(['url','title','company','location','description','fit','date_applied'].map(k=>[k,{value:''}]));$('#paste').value='';
- const context={crypto:{randomUUID:()=>"test-progress-id"},setTimeout,clearTimeout,$,draftRequest:0,editing:null,backgroundPaused:()=>false,esc:String,api:(route,body)=>new Promise((resolve,reject)=>calls.push({route,body,resolve,reject})),renderAnalysis:a=>{$('#draftAnalysis').innerHTML=a.summary}};
+ const context={window:{},crypto:{randomUUID:()=>"test-progress-id"},setTimeout,clearTimeout,$,draftRequest:0,editing:null,backgroundPaused:()=>false,esc:String,api:(route,body)=>new Promise((resolve,reject)=>calls.push({route,body,resolve,reject})),renderAnalysis:a=>{$('#draftAnalysis').innerHTML=a.summary}};
  vm.createContext(context);vm.runInContext(source.slice(source.indexOf('async function extract(){'),source.indexOf("$('#jobForm').onsubmit")),context);
  return {context,$,calls};
 }

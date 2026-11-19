@@ -100,3 +100,8 @@ body.sidebar-collapsed .notifications-button:has(b:not(:empty))::after{content:'
 #draftProgress{display:block;width:100%;height:8px;margin:12px 0;accent-color:var(--green)}#draftWork{font-size:13px;overflow-wrap:anywhere}
 
 #autofillRules{font:12px ui-monospace,monospace}#autofillRulesResult{white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto;font:13px/1.6 ui-monospace,monospace;color:var(--ink)}
+
+.improve-autofill{border-top:1px solid var(--line);padding-top:16px;margin-top:16px}.learned-autofill{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding:10px 0}.learned-autofill p{overflow-wrap:anywhere}
+
+/* Immediate section labels, including keyboard focus. */
+aside{z-index:20;overflow:visible}nav button[data-tooltip]{position:relative}nav button[data-tooltip]::after{content:attr(data-tooltip);position:absolute;left:calc(100% + 10px);top:50%;transform:translateY(-50%);padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:#292929;color:var(--ink);font-size:12px;white-space:nowrap;box-shadow:0 3px 12px #0005;pointer-events:none;opacity:0;visibility:hidden;z-index:100}nav button[data-tooltip]:is(:hover,:focus-visible)::after{opacity:1;visibility:visible}

@@ -43,3 +43,10 @@ test('leaving a map removes its instance and keeps only the viewport for restori
  vm.createContext(context);const text=source('app.js');vm.runInContext(text.slice(text.indexOf('function restoreViewScroll(')),context);context.releaseHiddenView('applications');
  assert.equal(removed,1);assert.equal(context.map,null);assert.equal(context.markers,null);assert.equal(context.mapPosition.zoom,8);assert.deepEqual(cleared,['#mapCanvas','#mapList']);assert.equal(context.mapRenderRequest,1);
 });
+test('missing section scripts recover without duplicating initialized sections',async()=>{
+ for(const [view,fn,file] of [['interviewPrep','loadPrep','interview-prep'],['questions','renderQuestions','questions'],['emails','loadEmails','emails']]){
+  const {nodes,context}=assets();const failed=context.ensureSectionScript(view);nodes[0].onerror();await assert.rejects(failed,/retry/);
+  const retry=context.ensureSectionScript(view);assert.equal(nodes[1].src,'/'+file+'.js');context[fn]=()=>{};nodes[1].onload();await retry;
+  await context.ensureSectionScript(view);assert.equal(nodes.length,2);
+ }
+});

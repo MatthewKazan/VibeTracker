@@ -152,3 +152,127 @@ def structured_locations(posting):
   names=[e.get('name') for e in eligible if isinstance(e,dict) and isinstance(e.get('name'),str)]
   values.insert(0,'Remote'+(' — '+', '.join(names) if names else ''))
  return '; '.join(dict.fromkeys(values))
+
+# Learning stores DOM positions, never the corrected value as a future field value.
+def field_text(field,value):
+ labels={'title':'job title|position|role','company':'company|employer','location':'job location|location'}
+ value=re.sub(r'^\s*(?:'+labels[field]+r')\s*:\s*','',value,flags=re.I).strip()
+ return value
+
+def equivalent(field,a,b):
+ import unicodedata
+ def norm(value):
+  value=field_text(field,value)
+  if field=='location':
+   import locations
+   value=locations.normalize(value)[0]
+  return ' '.join(unicodedata.normalize('NFKC',value).casefold().split())
+ return norm(a)==norm(b)
+
+def visible(node):
+ while node:
+  if node.tag in SKIP or node.tag in ('input','select','textarea') or 'hidden' in node.attrs or node.attrs.get('aria-hidden')=='true' or re.search(r'display\s*:\s*none|visibility\s*:\s*hidden',node.attrs.get('style',''),re.I):return False
+  node=node.parent
+ return True
+
+def stable_tokens(node):
+ options=[]
+ # Attribute names describe the field; user-entered strings are never embedded in selectors.
+ for attr in ['itemprop','data-automation-id','data-testid','property','name']:
+  value=node.attrs.get(attr,'')
+  if value and re.fullmatch(r'[\w:.-]{1,60}',value):options.append((100,node.tag+'['+attr+'="'+value+'"]'))
+ ident=node.attrs.get('id','')
+ if re.fullmatch(r'[A-Za-z_][\w-]{1,60}',ident) and not re.search(r'\d{4,}',ident):options.append((90,'#'+ident))
+ for cls in node.attrs.get('class','').split():
+  if not re.fullmatch(r'[A-Za-z_][\w-]{1,48}',cls) or re.search(r'\d{4,}',cls) or cls in {'active','selected','hidden','visible','open','container','row','col','flex','grid'}:continue
+  score=85 if re.search(r'title|company|location|job|role|position|posting',cls,re.I) else 55
+  options.append((score,'.'+cls))
+ if node.tag in ('h1','h2','h3','address'):options.append((65,node.tag))
+ return options
+
+def learn(raw,url,corrections):
+ if not isinstance(corrections,dict) or set(corrections)-{'title','company','location'}:raise ValueError('Correct the title, company or location before improving Autofill.')
+ if any(not isinstance(v,str) or len(v)>500 for v in corrections.values()):raise ValueError('Corrections must be text up to 500 characters per field.')
+ if not any(v.strip() for v in corrections.values()):raise ValueError('Enter at least one correct title, company or location first.')
+ parsed=urllib.parse.urlparse(url)
+ if parsed.scheme not in ('https','http') or not parsed.hostname:raise ValueError('Enter the original job posting URL first.')
+ tree=Tree(raw);fields={};found={};skipped={}
+ for field,correct in corrections.items():
+  if not correct.strip():continue
+  candidates=[]
+  for node in tree.nodes:
+   attr='content' if node.tag=='meta' and node.attrs.get('content') else None
+   if not attr and not visible(node):continue
+   value=node.attrs.get(attr,'') if attr else text(node)
+   if not value or len(value)>600 or not equivalent(field,value,correct):continue
+   candidates.append((node,attr,value))
+   if len(candidates)>50:break
+  if not candidates:skipped[field]='The corrected value was not found in the page.';continue
+  if len(candidates)>50:skipped[field]='That value appears in too many places to learn safely.';continue
+  choices=[]
+  for node,attr,value in candidates:
+   options=list(stable_tokens(node));parent=node.parent
+   # A stable nearby container can distinguish repeated headings/labels.
+   for _ in range(3):
+    if not parent or parent.tag in ('body','html'):break
+    for score,prefix in stable_tokens(parent)[:5]:
+     options.append((score-15,prefix+' '+node.tag))
+     options.extend((min(score,s)-10,prefix+' '+selector) for s,selector in stable_tokens(node)[:5])
+    parent=parent.parent
+   for score,selector in options:
+    if len(selector)>300:continue
+    selected=select(tree,selector)
+    if len(selected)!=1 or selected[0] is not node:continue
+    spec={'selector':selector}
+    if attr:spec['attribute']=attr
+    choices.append((score,-len(selector),spec,value,node))
+  if not choices:skipped[field]='No unique page element was found. This field stays unchanged.';continue
+  choices.sort(key=lambda c:(c[0],c[1]),reverse=True)
+  best=choices[0]
+  # Distinct equally good positions are not guessed between (e.g. two job cards).
+  tied=[c for c in choices if c[:2]==best[:2]]
+  if len({id(c[4]) for c in tied})>1:skipped[field]='Several equally likely page elements matched. This field stays unchanged.';continue
+  fields[field]=[best[2]];found[field]=field_text(field,best[3])
+ path=parsed.path or '/';parent=path.rsplit('/',1)[0]+'/'
+ # Do not expand a one-level URL to every route on a host.
+ scope={'path_prefix':parent} if parent!='/' else {'path_exact':path}
+ # Shared job hosts may use a query parameter to select an employer/board.
+ query={k:v for k,v in urllib.parse.parse_qsl(parsed.query) if k.lower() in ('for','company','board','tenant','site','team')}
+ rule={'host':parsed.hostname,**scope,'query_scope':query,'fields':fields}
+ return {'rule':rule,'found':found,'skipped':skipped,'scope':parsed.hostname+(parent if parent!='/' else path)}
+
+def apply_learned(tree,url,rules):
+ parsed=urllib.parse.urlparse(url);query=dict(urllib.parse.parse_qsl(parsed.query));result={};used=[]
+ for rule in reversed(rules):
+  if parsed.hostname!=rule.get('host'):continue
+  if rule.get('path_exact') is not None and parsed.path!=rule['path_exact']:continue
+  if rule.get('path_prefix') and not parsed.path.startswith(rule['path_prefix']):continue
+  if any(query.get(k)!=v for k,v in rule.get('query_scope',{}).items()):continue
+  for field,specs in rule.get('fields',{}).items():
+   if field in result:continue
+   spec=specs[0];nodes=select(tree,spec['selector'])
+   if len(nodes)!=1:continue
+   node=nodes[0]
+   if not spec.get('attribute') and not visible(node):continue
+   value=node.attrs.get(spec['attribute'],'') if spec.get('attribute') else text(node)
+   if value and len(value)<=500:result[field]=field_text(field,value);used.append(field)
+ return result,used
+
+def validate_learned(rules):
+ if not isinstance(rules,list) or len(rules)>50:raise ValueError('Up to 50 saved Autofill improvements are supported. Remove an older improvement first.')
+ seen=set()
+ for rule in rules:
+  if not isinstance(rule,dict) or set(rule)-{'id','host','path_prefix','path_exact','query_scope','fields','created_at'}:raise ValueError('Invalid saved Autofill improvement.')
+  ident=rule.get('id','')
+  if not isinstance(ident,str) or not re.fullmatch(r'[a-f0-9]{24}',ident) or ident in seen:raise ValueError('Invalid Autofill improvement ID.')
+  seen.add(ident)
+  if ('path_prefix' in rule)==('path_exact' in rule):raise ValueError('An improvement needs one URL scope.')
+  path=rule.get('path_prefix',rule.get('path_exact'))
+  if not isinstance(path,str) or not path.startswith('/') or len(path)>500:raise ValueError('Invalid Autofill URL scope.')
+  query=rule.get('query_scope',{})
+  if not isinstance(query,dict) or len(query)>10 or any(not isinstance(k,str) or not isinstance(v,str) or len(k)>80 or len(v)>200 for k,v in query.items()):raise ValueError('Invalid Autofill board scope.')
+  fields=rule.get('fields',{})
+  if not isinstance(fields,dict) or set(fields)-{'title','company','location'} or any(not isinstance(specs,list) or len(specs)!=1 for specs in fields.values()):raise ValueError('Invalid learned fields.')
+  validate([{'name':'Learned improvement','host':rule.get('host'),'fields':fields}])
+  if any(spec.get('attribute') not in (None,'content') for specs in fields.values() for spec in specs):raise ValueError('Invalid learned source attribute.')
+ return rules
